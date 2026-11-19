@@ -8,11 +8,22 @@ Indexes are allocated per identity+chain and never reused.
 from __future__ import annotations
 
 from mnemonic import Mnemonic
-from solders.keypair import Keypair
+
+try:
+    from solders.keypair import Keypair
+except ImportError:  # optional extra — pip install -e ".[solana]" (or ./install.sh --full)
+    Keypair = None
 
 from .. import db, vault
+from ..jsonio import Denied
 
 MN = Mnemonic("english")
+
+
+def _require_solders() -> None:
+    if Keypair is None:
+        raise Denied("Solana support needs the solders extra — install it with: "
+                     "pip install -e \".[solana]\" (or ./install.sh --full)")
 
 
 def new_mnemonic(words: int = 24) -> str:
@@ -36,6 +47,7 @@ def derive_evm(mnemonic: str, index: int) -> tuple[bytes, str]:
 
 
 def derive_sol(mnemonic: str, index: int) -> tuple[bytes, str]:
+    _require_solders()
     kp = Keypair.from_seed_and_derivation_path(_seed(mnemonic), f"m/44'/501'/{index}'/0'")
     return bytes(kp), str(kp.pubkey())
 
