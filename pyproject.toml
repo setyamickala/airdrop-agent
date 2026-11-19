@@ -17,6 +17,8 @@ dependencies = [
   "cryptography>=42",
   "mnemonic>=0.21",
   "base58>=2.1",
+  "solders>=0.21",
+  "telethon>=1.36",
   "beautifulsoup4>=4.12",
   "lxml>=5.0",
   "pillow>=10.0",
@@ -27,7 +29,7 @@ browser = ["playwright>=1.64,<1.66"]
 solana = ["solders>=0.21"]
 discord = ["discord.py-self>=2.0"]
 telegram = ["telethon>=1.36"]
-full = ["playwright>=1.64,<1.66", "solders>=0.21", "discord.py-self>=2.0", "telethon>=1.36"]
+full = ["playwright>=1.64,<1.66", "discord.py-self>=2.0"]
 dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 
 [project.scripts]
