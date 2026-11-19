@@ -275,10 +275,15 @@ def wallet_import(args) -> tuple[dict, list[str]]:
 
 
 def wallet_approve(args) -> tuple[dict, list[str]]:
+    if args.unlimited:
+        # The flag is kept so old scripts fail with a clear error instead of
+        # an argparse error; unlimited approvals are hard-blocked (see
+        # wallet.send.approve), so this path always denies.
+        raise Denied("unlimited approvals are hard-blocked — pass an explicit --amount")
     r = db.identity(args.identity)
     w = evmw.resolve(r["id"], args.label)
     out = sender.approve(args.chain, r["id"], w["label"], args.token, args.spender,
-                         None if args.unlimited else int(args.amount * 1e18), broadcast=args.broadcast)
+                         int(args.amount * 1e18), broadcast=args.broadcast)
     return out, []
 
 

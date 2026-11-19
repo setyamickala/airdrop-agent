@@ -74,6 +74,12 @@ def _human(dec: dict, value_wei: int, chain: str) -> str:
 def send(chain: str, identity_id: str, label: str, to: str | None, *, value_wei: int = 0, calldata: str = "0x",
          broadcast: bool = False, task: str = "", via: str = "cli", contract_creation: bool = False) -> dict:
     guard.check_kill()
+    # Hard block, checked before any RPC call or wallet load: an unlimited
+    # approval hands a spender the whole balance forever. No mode, gate or
+    # flag overrides this — set an explicit finite amount instead.
+    dec = decode(calldata)
+    if dec["kind"] in ("approve", "increaseAllowance", "permit2Approve") and policy.unlimited_approval(dec.get("amount")):
+        raise Denied("unlimited approval is hard-blocked: set an explicit finite amount")
     w3, cfg = chains.w3(chain)
     if to:
         to = to_checksum_address(to)
@@ -83,9 +89,6 @@ def send(chain: str, identity_id: str, label: str, to: str | None, *, value_wei:
         raise Denied("send needs a recipient")
     acct = vault.load_evm(label)
     owner = acct.address
-    dec = decode(calldata)
-    if dec["kind"] in ("approve", "increaseAllowance", "permit2Approve") and policy.unlimited_approval(dec.get("amount")):
-        log.info("unlimited approval detected (allowed, flagged)")
     summary = _human(dec, value_wei, chain)
     contract_ok = policy.allowlisted_contract(chain, to or "") or dec["kind"] == "native" or contract_creation
 
@@ -151,9 +154,18 @@ def send(chain: str, identity_id: str, label: str, to: str | None, *, value_wei:
 
 def approve(chain: str, identity_id: str, label: str, token: str, spender: str,
             amount: int | None = None, broadcast: bool = False) -> dict:
-    """ERC20 approve builder. amount None = max uint256 (denied? no: allowed but flagged)."""
+    """ERC20 approve builder. amount is required and must be finite.
+
+    Unlimited approvals are hard-blocked: amount=None used to mean
+    max uint256 (2**256-1) — that default is removed. Pass an explicit
+    finite amount; amount=0 is allowed (revoke).
+    """
     if amount is None:
-        amount = 2 ** 256 - 1
+        raise Denied("approve() needs an explicit finite amount — unlimited approvals are denied")
+    if amount < 0:
+        raise Denied("approve amount must be >= 0")
+    if policy.unlimited_approval(amount):
+        raise Denied("unlimited approval is hard-blocked: set an explicit finite amount")
     from eth_abi import encode as abi_encode
 
     data = "0x095ea7b3" + abi_encode(["address", "uint256"], [to_checksum_address(spender), amount]).hex()

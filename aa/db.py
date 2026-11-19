@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS runs(
   proof TEXT, error TEXT, started_at TEXT, ended_at TEXT);
 CREATE TABLE IF NOT EXISTS gates(
   id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, summary TEXT, payload TEXT, payload_hash TEXT,
-  code_hash TEXT, code TEXT, status TEXT DEFAULT 'pending', created_at TEXT, decided_at TEXT);
+  code_hash TEXT, status TEXT DEFAULT 'pending', created_at TEXT, decided_at TEXT);
 CREATE TABLE IF NOT EXISTS spend(day TEXT, chain TEXT, wallet TEXT, wei TEXT, PRIMARY KEY(day, chain, wallet));
 CREATE TABLE IF NOT EXISTS checkins(project TEXT, day TEXT, status TEXT, proof TEXT, PRIMARY KEY(project, day));
 CREATE TABLE IF NOT EXISTS events(
@@ -63,10 +63,34 @@ def today() -> str:
     return dt.date.today().isoformat()
 
 
+def _migrate_gates(con: sqlite3.Connection) -> None:
+    """Drop the plaintext `code` column from pre-fix databases.
+
+    CREATE TABLE IF NOT EXISTS never alters an existing table, so old DBs
+    keep the column (and the plaintext codes in it) unless migrated. This
+    rebuilds the table without `code`, copying every other column — the
+    plaintext values are discarded, the hashes are kept, so pending gates
+    stay approvable with the code the operator already received.
+    """
+    cols = [r[1] for r in con.execute("PRAGMA table_info(gates)").fetchall()]
+    if "code" not in cols:
+        return
+    con.execute("DROP TABLE IF EXISTS gates_new")
+    con.execute("""CREATE TABLE gates_new(
+      id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, summary TEXT, payload TEXT, payload_hash TEXT,
+      code_hash TEXT, status TEXT DEFAULT 'pending', created_at TEXT, decided_at TEXT)""")
+    con.execute("""INSERT INTO gates_new(id,kind,summary,payload,payload_hash,code_hash,status,created_at,decided_at)
+                   SELECT id,kind,summary,payload,payload_hash,code_hash,status,created_at,decided_at FROM gates""")
+    con.execute("DROP TABLE gates")
+    con.execute("ALTER TABLE gates_new RENAME TO gates")
+
+
 def db() -> sqlite3.Connection:
     con = sqlite3.connect(DB_PATH, timeout=30)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
+    _migrate_gates(con)
+    con.commit()
     return con
 
 

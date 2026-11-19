@@ -42,7 +42,45 @@ def test_unlimited_approval():
     from aa import policy
 
     assert policy.unlimited_approval(2 ** 256 - 1)
+    assert policy.unlimited_approval(2 ** 256 - 2)
     assert not policy.unlimited_approval(100)
+
+
+def test_unlimited_approval_denied_in_approve(monkeypatch):
+    """H3: approve() must DENY unlimited amounts, not default to max uint256."""
+    from aa.jsonio import Denied
+    from aa.wallet import send as sender
+
+    calls = []
+    monkeypatch.setattr(sender, "send", lambda *a, **k: calls.append((a, k)) or {"sent": True})
+    with pytest.raises(Denied):
+        sender.approve("sepolia", "id-1", "first", "0x" + "11" * 20, "0x" + "22" * 20, None)
+    with pytest.raises(Denied):
+        sender.approve("sepolia", "id-1", "first", "0x" + "11" * 20, "0x" + "22" * 20, 2 ** 256 - 1)
+    with pytest.raises(Denied):
+        sender.approve("sepolia", "id-1", "first", "0x" + "11" * 20, "0x" + "22" * 20, 2 ** 256 - 2)
+    assert calls == [], "denied approvals must never reach send()"
+    # A finite amount still goes through.
+    assert sender.approve("sepolia", "id-1", "first", "0x" + "11" * 20, "0x" + "22" * 20, 100) == {"sent": True}
+    assert len(calls) == 1
+
+
+def test_unlimited_approval_denied_in_send(home):
+    """H3: send() must DENY an unlimited-approval calldata before any RPC."""
+    from eth_abi import encode as abi_encode
+
+    from aa.jsonio import Denied
+    from aa.wallet import send as sender
+
+    token, spender = "0x" + "11" * 20, "0x" + "22" * 20
+    unlimited = "0x095ea7b3" + abi_encode(["address", "uint256"], [spender, 2 ** 256 - 1]).hex()
+    with pytest.raises(Denied):
+        sender.send("sepolia", "id-1", "first", token, calldata=unlimited)
+    finite = "0x095ea7b3" + abi_encode(["address", "uint256"], [spender, 100]).hex()
+    # Finite is NOT denied by the unlimited check — it proceeds and fails
+    # later (no wallet/RPC in this test), proving the check is the gate.
+    with pytest.raises(Exception, match="(?i)identity|wallet|vault|connection|rpc|estimate|denied"):
+        sender.send("sepolia", "id-1", "first", token, calldata=finite)
 
 
 def test_value_cap_denied(home):
