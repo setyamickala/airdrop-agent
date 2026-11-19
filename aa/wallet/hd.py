@@ -8,7 +8,11 @@ Indexes are allocated per identity+chain and never reused.
 from __future__ import annotations
 
 from mnemonic import Mnemonic
-from solders.keypair import Keypair
+
+try:
+    from solders.keypair import Keypair
+except ImportError:  # optional [solana] extra not installed
+    Keypair = None
 
 from .. import db, vault
 
@@ -36,6 +40,9 @@ def derive_evm(mnemonic: str, index: int) -> tuple[bytes, str]:
 
 
 def derive_sol(mnemonic: str, index: int) -> tuple[bytes, str]:
+    if Keypair is None:
+        raise SystemExit("solana support needs the solders package — "
+                         "install with: pip install 'airdrop-agent[solana]'")
     kp = Keypair.from_seed_and_derivation_path(_seed(mnemonic), f"m/44'/501'/{index}'/0'")
     return bytes(kp), str(kp.pubkey())
 

@@ -9,12 +9,16 @@ import base64
 import time
 
 import requests
-from solders.hash import Hash
-from solders.keypair import Keypair
-from solders.message import Message
-from solders.pubkey import Pubkey
-from solders.system_program import TransferParams, transfer
-from solders.transaction import Transaction
+
+try:
+    from solders.hash import Hash
+    from solders.keypair import Keypair
+    from solders.message import Message
+    from solders.pubkey import Pubkey
+    from solders.system_program import TransferParams, transfer
+    from solders.transaction import Transaction
+except ImportError:  # optional [solana] extra not installed
+    Hash = Keypair = Message = Pubkey = TransferParams = Transaction = transfer = None
 
 from .. import db, vault
 from ..jsonio import Denied
@@ -23,7 +27,13 @@ from . import hd
 
 log = get_logger("wallet.sol")
 LAMPORTS = 1_000_000_000
-MEMO_PROGRAM = Pubkey.from_string("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
+MEMO_PROGRAM_ID = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+
+
+def _require_solders() -> None:
+    if Keypair is None:
+        raise Denied("solana support needs the solders package — "
+                     "install with: pip install 'airdrop-agent[solana]'")
 
 
 def rpc(cfg: dict, method: str, params: list):
@@ -36,6 +46,7 @@ def rpc(cfg: dict, method: str, params: list):
 
 
 def create(identity_id: str, count: int = 1, prefix: str = "sol") -> list[dict]:
+    _require_solders()
     out = []
     for _ in range(count):
         kp = Keypair()
@@ -53,6 +64,7 @@ def derive(identity_id: str, count: int = 1) -> list[dict]:
 
 
 def import_key(identity_id: str, secret: str, label: str | None = None) -> dict:
+    _require_solders()
     raw = secret.strip()
     try:
         if raw.startswith("["):
@@ -92,6 +104,7 @@ def balance(cfg: dict, address: str) -> dict:
 
 
 def _unsigned_transfer(cfg: dict, from_addr: str, to_addr: str, lamports: int, memo: str | None):
+    _require_solders()
     blockhash = rpc(cfg, "getLatestBlockhash", [{"commitment": "confirmed"}])["value"]["blockhash"]
     ix = transfer(TransferParams(from_pubkey=Pubkey.from_string(from_addr),
                                  to_pubkey=Pubkey.from_string(to_addr), lamports=lamports))
@@ -99,7 +112,7 @@ def _unsigned_transfer(cfg: dict, from_addr: str, to_addr: str, lamports: int, m
     if memo:
         from solders.instruction import Instruction
 
-        ixns.append(Instruction(MEMO_PROGRAM, memo.encode(), []))
+        ixns.append(Instruction(Pubkey.from_string(MEMO_PROGRAM_ID), memo.encode(), []))
     msg = Message.new_with_blockhash(ixns, Pubkey.from_string(from_addr), Hash.from_string(blockhash))
     return Transaction.new_unsigned(msg), blockhash
 

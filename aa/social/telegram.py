@@ -9,9 +9,18 @@ import asyncio
 import random
 import re
 
-from telethon import TelegramClient, functions, types
-from telethon.errors import FloodWaitError, SessionPasswordNeededError
-from telethon.sessions import StringSession
+try:
+    from telethon import TelegramClient, functions, types
+    from telethon.errors import FloodWaitError, SessionPasswordNeededError
+    from telethon.sessions import StringSession
+except ImportError:  # optional [telegram] extra not installed
+    TelegramClient = functions = types = StringSession = None
+
+    class FloodWaitError(Exception):  # placeholder — never raised without telethon
+        seconds = 0
+
+    class SessionPasswordNeededError(Exception):
+        pass
 
 from .. import config, db, ratelimit, vault
 from ..jsonio import Denied
@@ -31,7 +40,14 @@ def _session(identity_id: str) -> str:
     return s
 
 
+def _require_telethon() -> None:
+    if TelegramClient is None:
+        raise Denied("telegram support needs the telethon package — "
+                     "install with: pip install 'airdrop-agent[telegram]'")
+
+
 def client(identity_id: str) -> TelegramClient:
+    _require_telethon()
     api_id, api_hash = _api()
     return TelegramClient(StringSession(_session(identity_id)), api_id, api_hash,
                           device_model=config.env("TG_DEVICE", "Pixel 8"), system_version="14",
@@ -57,6 +73,7 @@ async def _safe(coro, identity_id: str):
 
 # ---------- login ----------
 async def login_send(identity_id: str, phone: str) -> dict:
+    _require_telethon()
     api_id, api_hash = _api()
     c = TelegramClient(StringSession(), api_id, api_hash)
     await c.connect()
@@ -70,6 +87,7 @@ async def login_send(identity_id: str, phone: str) -> dict:
 
 
 async def login_verify(identity_id: str, code: str, password: str = "") -> dict:
+    _require_telethon()
     phone = vault.get_secret(f"tg_phone:{identity_id}")
     phash = vault.get_secret(f"tg_hash:{identity_id}")
     if not (phone and phash):
