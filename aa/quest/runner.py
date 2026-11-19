@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+from decimal import Decimal
 
 from .. import config, db, gates, guard, policy
 from ..browser import flows
@@ -41,21 +42,25 @@ def _render(val, identity_id: str, q: dict):
     return {k: _render(v, identity_id, q) for k, v in val.items()}
 
 
+def _wei(chain: str, value) -> int:
+    """Exact decimal -> base units. float multiplication loses wei at 18 decimals."""
+    return int(Decimal(str(value)) * (10 ** policy.decimals(chain)))
+
+
 def _login_needs(q: dict) -> list[str]:
     out: list[str] = []
     for raw in q.get("steps") or []:
         step, val = next(iter(raw.items()))
         target = val.get("target", "") if isinstance(val, dict) else str(val or "")
-        if step in ("follow", "like", "retweet", "post", "repost", "join"):
-            if "x.com" in target or "twitter.com" in target or step in ("like", "retweet"):
+        if step in ("follow", "like", "retweet", "post", "repost", "join", "react"):
+            if step in ("like", "retweet", "post", "repost") or "x.com" in target or "twitter.com" in target \
+                    or (step == "follow" and target.startswith("@")):
                 if "x" not in out:
                     out.append("x")
-            elif "t.me" in target:
+            elif step in ("follow", "join", "react"):
+                # plain handles / t.me links go through Telegram in _do_social
                 if "telegram" not in out:
                     out.append("telegram")
-            elif target.startswith("@"):
-                if "x" not in out:
-                    out.append("x")
         if step in ("discord", "discord_post"):
             if "discord" not in out:
                 out.append("discord")
@@ -86,6 +91,10 @@ async def _do_step(b: Browser, step: str, val, identity_id: str, q: dict, proof:
     ad = adapters.get(q.get("platform", "generic"))
     if step == "goto":
         r = await b.goto(val)
+        if (r.get("scam") or {}).get("verdict") == "bad":
+            raise Denied(f"refusing flagged URL {val}: {'; '.join((r['scam'].get('reasons') or [])[:3])}")
+        if r.get("cf") == "blocked":
+            raise Denied(f"cloudflare blocked {val} — run: aa cf assist --identity {identity_id} --url {val}")
         await flows.dismiss(b)
         cap = await b.solve_captcha_if_present()
         if cap.get("present"):
@@ -166,8 +175,12 @@ async def _do_step(b: Browser, step: str, val, identity_id: str, q: dict, proof:
     if step == "faucet":
         return await faucets.claim(b, identity_id, val.get("chain") or q.get("chain"), val.get("name", ""))
     if step == "tx":
-        out = await asyncio.to_thread(sender.send, val.get("chain") or q.get("chain"), identity_id,
-                                      val.get("label", ""), val["to"], value_wei=int(float(val.get("value", 0)) * 10 ** policy.decimals(val.get("chain") or q.get("chain") or "sepolia")),
+        chain = val.get("chain") or q.get("chain")
+        if not chain:
+            raise Denied("tx step needs a chain (set quest.chain or step.chain)")
+        out = await asyncio.to_thread(sender.send, chain, identity_id,
+                                      val.get("label", ""), val["to"],
+                                      value_wei=_wei(chain, val.get("value", 0)),
                                       calldata=val.get("data", "0x"), broadcast=True, task=q["id"], via="quest")
         proof.append({"tx": out.get("tx")})
         return out
@@ -197,9 +210,22 @@ async def _do_step(b: Browser, step: str, val, identity_id: str, q: dict, proof:
             await b.click(text=val, exact=False)
             db.record_checkin(q["id"], True, {"step": val})
             return {"checkin": val}
-        except Exception:  # noqa: BLE001
-            db.record_checkin(q["id"], False, {"step": val})
-            return {"checkin": val, "already": True}
+        except Exception as e:  # noqa: BLE001
+            # "Already done" is a claim that needs evidence from the page, not a
+            # blanket assumption — otherwise a broken selector fakes the streak.
+            text = ""
+            try:
+                text = (await b.text()).lower()
+            except Exception:  # noqa: BLE001
+                pass
+            markers = ("already checked in", "already claimed", "checked in today",
+                       "come back tomorrow", "already completed", "claim again in")
+            if any(m in text for m in markers):
+                db.record_checkin(q["id"], True, {"step": val, "evidence": "already-marker"})
+                return {"checkin": val, "already": True}
+            db.record_checkin(q["id"], False, {"step": val, "error": str(e)[:200]})
+            shot = await b.screenshot("checkin_fail")
+            raise Denied(f"checkin '{val}' failed: {str(e)[:160]} (screenshot {shot})")
     if step in ("follow", "like", "retweet", "post", "join", "react"):
         return await _do_social(step, val, identity_id)
     raise Denied(f"unhandled step {step}")

@@ -159,7 +159,7 @@ Codes arrive from the agent's own inbox, not from chat text.
 ## Modes
 
 `balanced` default. `turbo` widens caps and auto-approves connect/sign inside limits; hard blocks stay
-(KILL, unlimited approval, eth_sign, blocklist, drainer verdict). `safe` gates everything.
+(KILL, blocklist, drainer verdict) and unlimited approvals / `eth_sign` always gate. `safe` gates everything.
 
 ```bash
 aa mode turbo   # only when the operator accepts the wider caps

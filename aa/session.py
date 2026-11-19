@@ -127,11 +127,25 @@ async def restore(identity_id: str, browser) -> int:
         return 0
     try:
         blob = json.loads(raw)
-        cookies = (blob.get("state") or {}).get("cookies") or []
+        state = blob.get("state") or {}
+        cookies = state.get("cookies") or []
         ttl_days = int(config.env("SESSION_STATE_DAYS", "14"))
         if time.time() - blob.get("at", 0) > ttl_days * 86400:
             return 0
         await browser.context.add_cookies(cookies)
+        # localStorage is origin-bound and cannot be injected cross-origin; seed it
+        # with an init script that runs before page scripts on each matching origin.
+        seeds = []
+        for o in state.get("origins") or []:
+            items = o.get("localStorage") or []
+            if not items or not o.get("origin"):
+                continue
+            pairs = "".join(
+                f"localStorage.setItem({json.dumps(i.get('name', ''))},{json.dumps(i.get('value', ''))});"
+                for i in items)
+            seeds.append(f"if (location.origin === {json.dumps(o['origin'])}) {{ try {{ {pairs} }} catch (_) {{}} }}")
+        if seeds:
+            await browser.context.add_init_script("(() => {" + "".join(seeds) + "})()")
         return len(cookies)
     except Exception as e:  # noqa: BLE001
         log.warning("state restore failed: %s", e)

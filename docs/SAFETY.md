@@ -16,7 +16,9 @@ main seed is never imported by default.
 ## Approval gates
 
 - 6-char code, hash-bound to the payload, TTL 12h, single use.
-- Delivered only to the operator's Telegram bot. The page cannot choose the code.
+- Delivered to the operator's Telegram bot, or — when no bot is configured — to a private
+  `~/.airdrop-agent/gates/<id>.code` file. Never stored plaintext in SQLite, never printed to
+  stdout/logs. The page cannot choose the code.
 - A gate covers: chain, recipient, value, calldata, selector, decoded call, balance delta, domain.
 - Unlimited approvals always gate, in every mode.
 - Permit/Permit2/Seaport orders gate unless turbo explicitly sets `allow_permits`.
@@ -26,8 +28,7 @@ main seed is never imported by default.
 | block | why |
 |---|---|
 | KILL file | operator stop |
-| `eth_sign` blind hash | unreadable payload |
-| unlimited approval | drainer pattern |
+| `eth_sign` blind hash | unreadable payload (always gated) |
 | blocklisted address | known bad |
 | scam verdict `bad` | drainer domain |
 | value over per-tx cap | runaway amount |

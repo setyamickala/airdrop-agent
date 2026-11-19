@@ -68,10 +68,28 @@ def put(kind: str, name: str, data: bytes) -> None:
 
 
 def overwrite(kind: str, name: str, data: bytes) -> None:
+    """Atomic replace: encrypt first, write a temp file, then os.replace.
+
+    A failure at any point leaves the existing entry intact (the old
+    unlink-then-write sequence could lose the secret on a crash mid-write).
+    """
+    import tempfile
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     p = _path(kind, name)
-    if p.exists():
-        p.unlink()
-    put(kind, name, data)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    salt, nonce = os.urandom(16), os.urandom(12)
+    ct = AESGCM(_kdf(salt)).encrypt(nonce, data, f"{kind}/{name}".encode())
+    blob = json.dumps({"v": 1, "salt": salt.hex(), "nonce": nonce.hex(), "ct": ct.hex()})
+    fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".tmp-", suffix=".enc")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(blob)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, p)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def get(kind: str, name: str) -> bytes:

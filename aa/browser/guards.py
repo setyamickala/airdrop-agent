@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 from urllib.parse import urlparse
 
@@ -200,8 +201,22 @@ class WalletBridge:
             raise Denied("identity has no Solana wallet")
         return ws[0]["address"]
 
+    def _sol_chain(self) -> dict:
+        """Respect the session chain when it is Solana; else first configured Solana chain."""
+        try:
+            if policy.chain(self.chain).get("kind") == "solana":
+                return chains.sol(self.chain)
+        except SystemExit:
+            pass
+        for name in chains.all_chains():
+            if policy.chain(name).get("kind") == "solana":
+                return chains.sol(name)
+        raise Denied("no solana chain configured in policy.yaml")
+
     def _sol_sync(self, origin: str, method: str, params: list) -> dict:
-        from solders.transaction import Transaction
+        from solders.transaction import Transaction, VersionedTransaction
+
+        from ..wallet import sol as solw
 
         v = self._guard(origin)
         if method in ("connect", "wallet_requestPermissions", "eth_requestAccounts"):
@@ -217,38 +232,74 @@ class WalletBridge:
             raw = params[0]
             data = bytes(raw) if isinstance(raw, list) else base64.b64decode(raw)
             ws = db.wallets(self.identity_id, "sol")
+            if not ws:
+                raise Denied("identity has no Solana wallet")
+            gate, _reasons = policy.needs_gate("sign_text")
+            if gate or not policy.domain_ok(origin):
+                gates.require("sign_text", f"Solana signMessage di {origin} ({len(data)} bytes)",
+                              {"_kind": "sign_text", "identity_id": self.identity_id,
+                               "label": ws[0]["label"], "origin": origin,
+                               "message": base64.b64encode(data).decode()})
             kp = vault.load_sol(ws[0]["label"])
             sig = kp.sign_message(data)
             return {"result": {"signature": list(bytes(sig)), "publicKey": self._sol_addr()}}
         if method in ("signTransaction", "signAndSendTransaction"):
-            cfg = chains.sol("solana-devnet" if "solana-devnet" in chains.all_chains() else
-                             [c for c in chains.all_chains() if policy.chain(c).get("kind") == "solana"][0])
+            cfg = self._sol_chain()
             raw = params[0]
             tx_bytes = base64.b64decode(raw) if isinstance(raw, str) else bytes(raw)
-            tx = Transaction.from_bytes(tx_bytes)
             ws = db.wallets(self.identity_id, "sol")
-            kp = vault.load_sol(ws[0]["label"])
-            from ..wallet import sol as solw
-
+            if not ws:
+                raise Denied("identity has no Solana wallet")
+            label = ws[0]["label"]
+            kp = vault.load_sol(label)
+            versioned = False
+            try:
+                tx = Transaction.from_bytes(tx_bytes)
+                msg = tx.message
+            except Exception:  # noqa: BLE001 — not legacy; try versioned (v0)
+                try:
+                    vtx = VersionedTransaction.from_bytes(tx_bytes)
+                    msg = vtx.message
+                    versioned = True
+                except Exception as e:  # noqa: BLE001
+                    raise Denied(f"cannot parse solana transaction: {str(e)[:120]}")
+            n_req = int(msg.header.num_required_signatures)
+            keys = [str(k) for k in msg.account_keys]
+            if n_req != 1 or not keys or keys[0] != str(kp.pubkey()):
+                raise Denied("transaction must require exactly this wallet as the sole signer")
+            pre = int((solw.rpc(cfg, "getBalance", [keys[0], {"commitment": "confirmed"}]) or {}).get("value", 0))
             sim = solw.rpc(cfg, "simulateTransaction", [base64.b64encode(tx_bytes).decode(),
-                                                       {"sigVerify": False, "replaceRecentBlockhash": True}])
-            if (sim or {}).get("value", {}).get("err"):
-                raise Denied(f"solana simulation failed: {sim['value']['err']}")
-            # caps apply to the native balance delta we can see
-            pre = int(((sim.get("value") or {}).get("accounts") or [{}])[0].get("lamports", 0) or 0)
-            value_est = max(0, int(tx.message.recent_blockhash and 0))
-            policy.check_value(cfg["name"], ws[0]["label"], max(pre, 5000), 5000, 1)
+                                                        {"sigVerify": False, "replaceRecentBlockhash": True}])
+            sval = (sim or {}).get("value") or {}
+            if sval.get("err"):
+                raise Denied(f"solana simulation failed: {sval['err']}")
+            accounts = sval.get("accounts") or []
+            post = int(accounts[0].get("lamports", pre)) if accounts else pre
+            # Cap the native OUTFLOW (payer balance delta incl. fees), never the whole balance.
+            value_est = max(pre - post, 5000)
+            policy.check_value(cfg["name"], label, value_est, 5000, 1)
             payload = {"_kind": "tx", "chain": cfg["name"], "identity": self.identity_id,
-                       "label": ws[0]["label"], "to": "solana-tx", "value": str(value_est),
-                       "data": base64.b64encode(tx_bytes).decode()[:4000]}
-            if not gates.consume(payload):
-                gates.require("tx", f"Solana transaction dari {self._sol_addr()} ({'signAndSend' if method == 'signAndSendTransaction' else 'sign'})", payload)
-            tx.sign([kp], tx.message.recent_blockhash)
-            signed = base64.b64encode(bytes(tx)).decode()
+                       "label": label, "to": "solana-tx", "value": str(value_est),
+                       "data": base64.b64encode(tx_bytes).decode(),
+                       "data_sha256": hashlib.sha256(tx_bytes).hexdigest()}
+            mainnet = not policy.chain(cfg["name"]).get("testnet", False)
+            want_gate, reasons = policy.needs_gate("tx", mainnet=mainnet, contract_ok=True)
+            if want_gate:
+                if not gates.consume(payload):
+                    gates.require("tx", f"Solana {method} di {cfg['name']} (~{value_est} lamports)\n"
+                                        f"alasan: {'; '.join(reasons)}", payload)
+            elif not gates.consume(payload):
+                db.event("tx", f"auto sol {method} on {cfg['name']}", self.identity_id)
+            if versioned:
+                signed_tx = VersionedTransaction(msg, [kp])
+            else:
+                tx.sign([kp], msg.recent_blockhash)
+                signed_tx = tx
+            signed = base64.b64encode(bytes(signed_tx)).decode()
             if method == "signTransaction":
                 return {"result": signed}
             sig = solw.rpc(cfg, "sendTransaction", [signed, {"encoding": "base64", "skipPreflight": False}])
-            db.add_spend(cfg["name"], ws[0]["label"], max(pre, 5000))
+            db.add_spend(cfg["name"], label, value_est)
             db.event("tx", f"sol {sig}", self.identity_id, data={"chain": cfg["name"]})
             return {"result": sig}
         raise Denied(f"unsupported solana method {method}")

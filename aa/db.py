@@ -60,19 +60,30 @@ def now() -> str:
 
 
 def today() -> str:
-    return dt.date.today().isoformat()
+    """UTC day — must match the UTC timestamps in events/spend, not the local date."""
+    return dt.datetime.now(dt.timezone.utc).date().isoformat()
+
+
+_INIT: set = set()
 
 
 def db() -> sqlite3.Connection:
+    fresh = not DB_PATH.exists()
     con = sqlite3.connect(DB_PATH, timeout=30)
     con.row_factory = sqlite3.Row
-    con.executescript(SCHEMA)
+    if fresh or DB_PATH not in _INIT:
+        con.executescript(SCHEMA)
+        _INIT.add(DB_PATH)
     return con
 
 
 def rows(sql: str, args: tuple = ()) -> list[dict]:
-    with db() as con:
-        return [dict(r) for r in con.execute(sql, args)]
+    con = db()
+    try:
+        with con:
+            return [dict(r) for r in con.execute(sql, args)]
+    finally:
+        con.close()
 
 
 def one(sql: str, args: tuple = ()) -> dict | None:
@@ -86,9 +97,13 @@ def scalar(sql: str, args: tuple = (), default=None):
 
 
 def execute(sql: str, args: tuple = ()) -> int:
-    with db() as con:
-        cur = con.execute(sql, args)
-        return cur.lastrowid or cur.rowcount
+    con = db()
+    try:
+        with con:
+            cur = con.execute(sql, args)
+            return cur.lastrowid or cur.rowcount
+    finally:
+        con.close()
 
 
 def new_id(prefix: str) -> str:
@@ -171,9 +186,19 @@ def email_of(identity_id: str) -> dict | None:
 
 # ---------- spend ----------
 def add_spend(chain: str, wallet: str, wei: int) -> None:
+    """Atomic read-modify-write under BEGIN IMMEDIATE so concurrent writers
+    (autopilot + CLI, threads) cannot lose increments and undercount the daily cap."""
     d = today()
-    cur = int(scalar("SELECT wei FROM spend WHERE day=? AND chain=? AND wallet=?", (d, chain, wallet), 0) or 0)
-    execute("INSERT OR REPLACE INTO spend VALUES(?,?,?,?)", (d, chain, wallet, str(cur + wei)))
+    con = db()
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        r = con.execute("SELECT wei FROM spend WHERE day=? AND chain=? AND wallet=?",
+                        (d, chain, wallet)).fetchone()
+        total = int(r["wei"] if r else 0) + int(wei)
+        con.execute("INSERT OR REPLACE INTO spend VALUES(?,?,?,?)", (d, chain, wallet, str(total)))
+        con.commit()
+    finally:
+        con.close()
 
 
 def spent_today(chain: str, wallet: str) -> int:
@@ -189,7 +214,7 @@ def record_checkin(project: str, ok: bool, proof: dict | None = None) -> None:
 def streak(project: str) -> int:
     days = {r["day"] for r in rows("SELECT day FROM checkins WHERE project=? AND status='ok'", (project,))}
     n = 0
-    d = dt.date.today()
+    d = dt.date.fromisoformat(today())
     while d.isoformat() in days:
         n += 1
         d -= dt.timedelta(days=1)
@@ -202,6 +227,10 @@ def checked_in_today(project: str) -> bool:
 
 def reset() -> None:
     """Wipe all rows (tests only; the schema is recreated by db())."""
-    with db() as con:
-        for (name,) in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
-            con.execute(f"DELETE FROM {name}")
+    con = db()
+    try:
+        with con:
+            for (name,) in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+                con.execute(f"DELETE FROM {name}")
+    finally:
+        con.close()

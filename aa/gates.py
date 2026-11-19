@@ -1,7 +1,10 @@
 """Approval gates: a human code, bound to the exact payload hash.
 
-The code is delivered only through the operator's Telegram bot. Reusing an approved
-gate requires an identical payload — a changed recipient/amount/domain is a new gate.
+The code is delivered through the operator's Telegram bot, or — when no bot is
+configured — written to a private file `~/.airdrop-agent/gates/<id>.code`. It is
+never stored in plaintext in SQLite and never printed to stdout/logs. Reusing an
+approved gate requires an identical payload within the TTL — a changed
+recipient/amount/domain is a new gate.
 """
 from __future__ import annotations
 
@@ -39,9 +42,21 @@ def create(kind: str, summary: str, payload: dict) -> int:
         "INSERT INTO gates(kind,summary,payload,payload_hash,code_hash,code,created_at)"
         " VALUES(?,?,?,?,?,?,?)",
         (kind, summary, json.dumps(payload, default=str), _hash(payload),
-         hashlib.sha256(code.encode()).hexdigest(), code, db.now()))
+         hashlib.sha256(code.encode()).hexdigest(), None, db.now()))
     db.event("gate", f"#{gid} {kind}: {summary[:160]}", payload.get("identity_id"), level="warn")
-    notify.send(notify.gate_message(gid, kind, summary, code), silent=False)
+    if notify.enabled():
+        notify.send(notify.gate_message(gid, kind, summary, code), silent=False)
+    else:
+        # No Telegram bot: deliver the code to a private file in the agent home,
+        # never to stdout/stderr or logs (daemons capture those).
+        d = config.HOME / "gates"
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / f"{gid}.code"
+        config.secure_write(p, code + "\n")
+        notify.send(f"🔐 APPROVAL #{gid} [{kind}]\n{summary}\n\n"
+                    f"Kode approval ada di {p} (bot Telegram belum diset).\n"
+                    f"Setujui: aa gate approve {gid} <CODE> · Tolak: aa gate reject {gid}",
+                    silent=False)
     return gid
 
 
@@ -49,11 +64,15 @@ def require(kind: str, summary: str, payload: dict) -> None:
     """Gate unless an identical approved payload is still fresh, else raise Gate."""
     p = {**payload, "_kind": kind} if not payload.get("_kind") else payload
     h = _hash(p)
-    with db.db() as con:
-        r = con.execute("SELECT * FROM gates WHERE payload_hash=? AND status='approved' ORDER BY id DESC", (h,)).fetchone()
-        if r:
-            con.execute("UPDATE gates SET status='used', decided_at=? WHERE id=?", (db.now(), r["id"]))
-            return
+    con = db.db()
+    try:
+        with con:
+            r = con.execute("SELECT * FROM gates WHERE payload_hash=? AND status='approved' ORDER BY id DESC", (h,)).fetchone()
+            if r and _age_min(r["created_at"]) <= _ttl():
+                con.execute("UPDATE gates SET status='used', decided_at=? WHERE id=?", (db.now(), r["id"]))
+                return
+    finally:
+        con.close()
     gid = create(kind, summary, p)
     raise Gate(f"approval #{gid} required — {summary}")
 
@@ -64,10 +83,10 @@ def _check_code(gid: int, code: str) -> dict:
         raise Denied(f"gate #{gid} not found")
     if r["status"] != "pending":
         raise Denied(f"gate #{gid} already {r['status']}")
+    if _age_min(r["created_at"]) > _ttl():
+        raise Denied(f"gate #{gid} expired — re-run the command to create a fresh gate")
     given = code.strip().upper()
-    expect = r.get("code") or ""
-    ok = hmac.compare_digest(given, expect) if expect else hmac.compare_digest(
-        hashlib.sha256(given.encode()).hexdigest(), r["code_hash"])
+    ok = hmac.compare_digest(hashlib.sha256(given.encode()).hexdigest(), r["code_hash"] or "")
     if not ok:
         raise Denied(f"wrong code for gate #{gid}")
     return r
@@ -100,18 +119,22 @@ def consume(payload: dict) -> dict | None:
     candidates = [payload]
     if not payload.get("_kind"):
         candidates.append({**payload, "_kind": "tx"})
-    with db.db() as con:
-        r = None
-        for p in candidates:
-            r = con.execute("SELECT id,created_at FROM gates WHERE payload_hash=? AND status='approved'"
-                            " ORDER BY id DESC", (_hash(p),)).fetchone()
-            if r and _age_min(r["created_at"]) <= _ttl():
-                break
+    con = db.db()
+    try:
+        with con:
             r = None
-        if not r:
-            return None
-        con.execute("UPDATE gates SET status='used' WHERE id=?", (r["id"],))
-        return {"gate": r["id"]}
+            for p in candidates:
+                r = con.execute("SELECT id,created_at FROM gates WHERE payload_hash=? AND status='approved'"
+                                " ORDER BY id DESC", (_hash(p),)).fetchone()
+                if r and _age_min(r["created_at"]) <= _ttl():
+                    break
+                r = None
+            if not r:
+                return None
+            con.execute("UPDATE gates SET status='used' WHERE id=?", (r["id"],))
+            return {"gate": r["id"]}
+    finally:
+        con.close()
 
 
 def list_gates(status: str = "pending") -> list[dict]:

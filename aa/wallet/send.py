@@ -76,7 +76,10 @@ def send(chain: str, identity_id: str, label: str, to: str | None, *, value_wei:
     guard.check_kill()
     w3, cfg = chains.w3(chain)
     if to:
-        to = to_checksum_address(to)
+        try:
+            to = to_checksum_address(to)
+        except (ValueError, TypeError) as e:
+            raise Denied(f"invalid recipient address: {to}") from e
         if policy.blocked(to):
             raise Denied(f"address is blocklisted: {to}")
     elif not contract_creation:
@@ -84,8 +87,11 @@ def send(chain: str, identity_id: str, label: str, to: str | None, *, value_wei:
     acct = vault.load_evm(label)
     owner = acct.address
     dec = decode(calldata)
-    if dec["kind"] in ("approve", "increaseAllowance", "permit2Approve") and policy.unlimited_approval(dec.get("amount")):
-        log.info("unlimited approval detected (allowed, flagged)")
+    unlimited = (dec["kind"] in ("approve", "increaseAllowance", "permit2Approve")
+                 and policy.unlimited_approval(dec.get("amount"))) or \
+                (dec["kind"] == "setApprovalForAll" and bool(dec.get("approved")))
+    if unlimited:
+        log.info("unlimited approval detected — gating in every mode")
     summary = _human(dec, value_wei, chain)
     contract_ok = policy.allowlisted_contract(chain, to or "") or dec["kind"] == "native" or contract_creation
 
@@ -108,7 +114,8 @@ def send(chain: str, identity_id: str, label: str, to: str | None, *, value_wei:
 
     payload = {"_kind": "tx", "chain": chain, "identity": identity_id, "label": label, "to": to,
                "value": str(value_wei), "data": calldata, "task": task}
-    want_gate, reasons = policy.needs_gate("tx", mainnet=not cfg["testnet"], contract_ok=contract_ok)
+    want_gate, reasons = policy.needs_gate("tx", mainnet=not cfg["testnet"], contract_ok=contract_ok,
+                                           unlimited=unlimited)
     if want_gate:
         body = (f"TX {summary}\nfrom {label} {owner}\nto {to}\ngas~{gas} fee~{gas*max_fee/1e18:.8f}\n"
                 f"alasan: {'; '.join(reasons)}")
@@ -118,7 +125,7 @@ def send(chain: str, identity_id: str, label: str, to: str | None, *, value_wei:
         db.event("tx", f"auto: {summary}", identity_id)
 
     tx = {"chainId": int(cfg["chain_id"]), "from": owner, "value": value_wei,
-          "data": calldata if calldata != "0x" else b"", "nonce": w3.eth.get_transaction_count(owner),
+          "data": calldata if calldata != "0x" else b"", "nonce": w3.eth.get_transaction_count(owner, "pending"),
           "gas": gas, "maxFeePerGas": max_fee, "maxPriorityFeePerGas": int(prio), "type": 2}
     if to:
         tx["to"] = to

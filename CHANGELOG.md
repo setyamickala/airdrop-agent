@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased — security & correctness audit
+
+### Fixed
+- Gates: `require()` respects the TTL (expired approvals can no longer be resurrected);
+  `approve()` rejects expired gates; codes are stored hash-only (no plaintext column) and
+  delivered to `~/.airdrop-agent/gates/<id>.code` when no Telegram bot is configured —
+  never printed to stdout/logs.
+- Policy/send: unlimited approvals and `setApprovalForAll(true)` gate in every mode, as
+  documented; nonce uses the `pending` block tag; invalid recipients raise `Denied`.
+- Solana bridge: respects the session chain (no silent devnet override); caps check the
+  payer's native outflow (pre/post-simulation delta), not the whole balance; `signMessage`
+  gates on non-allowlisted origins and in safe mode; gate payloads carry the full tx plus
+  SHA-256 (no 4000-char truncation); versioned (v0) transactions supported; multi-signer
+  transactions refused.
+- Quest runner: `goto` stops on Cloudflare block or scam verdict `bad`; `checkin` failures
+  record as fail unless the page shows "already done" evidence; login pre-flight detects
+  `post`/`repost` and plain Telegram targets; `tx` amounts convert with Decimal (exact wei)
+  and require a chain.
+- CF clearance: collision-resistant vault keys (hash of the full host); legacy entries
+  stay readable and migrate on save.
+- Vault: `overwrite()` is atomic (encrypt → temp → replace); a failed write keeps the old secret.
+- DB: day boundaries are UTC (matching event timestamps); connections are closed; schema
+  initializes once per process; `add_spend` is atomic under BEGIN IMMEDIATE.
+- Browser engine: native browser UA unless `BROWSER_UA` is set; page popups tracked as the
+  active page; Windows stale-lock liveness uses OpenProcess, not `os.kill` (which terminates);
+  screenshot proofs named with wall-clock epoch.
+- Sessions: `restore` reseeds localStorage via origin-matched init scripts, not only cookies.
+
+### Tests
+- 37 new regression tests (gates, send pipeline, Solana bridge, runner integrity, CF keys,
+  vault atomicity, DB concurrency/UTC, engine, session restore). Suite: 104 passing.
+
+
 ## 4.1.0 — 2026-11
 
 Durability release. Tested against nineteen live quest, testnet and whitelist targets.

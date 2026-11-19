@@ -73,3 +73,12 @@ def test_domain_allowlist(home):
     assert not policy.domain_ok("evil.xyz")
     policy.allow_domain("evil.xyz")
     assert policy.domain_ok("evil.xyz")
+
+
+def test_unlimited_approval_gates_in_every_mode(home):
+    from aa import policy
+    for m in ("balanced", "turbo"):
+        policy.set_mode(m)
+        ok, reasons = policy.needs_gate("tx", mainnet=False, contract_ok=True, unlimited=True)
+        assert ok, f"unlimited approval must gate in {m}"
+    policy.set_mode("balanced")

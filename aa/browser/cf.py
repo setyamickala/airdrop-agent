@@ -17,6 +17,7 @@ No third-party code is vendored; everything talks to public endpoints directly.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import random
 import re
@@ -86,11 +87,25 @@ TTL_NAME = "cf/{identity}/{host}"
 
 
 def _name(identity_id: str, host: str) -> str:
+    """Collision-resistant vault key: readable prefix + hash of the FULL host.
+
+    config.slug truncates at 40 chars, so two long hosts sharing a prefix used to
+    map to one key and overwrite each other's clearance. The hash suffix keeps
+    hosts distinct while the whole name stays <= 40 chars (slug-idempotent).
+    """
+    host = host.lower()
+    digest = hashlib.sha256(host.encode()).hexdigest()[:14]
+    return f"cf-{identity_id}-{config.slug(host)[:10]}-{digest}"
+
+
+def _legacy_name(identity_id: str, host: str) -> str:
     return config.slug(f"cf-{identity_id}-{host}")
 
 
 def cached(identity_id: str, host: str, ua: str) -> list[dict]:
     raw = vault.get_secret(_name(identity_id, host), "")
+    if not raw:
+        raw = vault.get_secret(_legacy_name(identity_id, host), "")
     if not raw:
         return []
     try:
@@ -109,6 +124,9 @@ def remember(identity_id: str, host: str, cookies: list[dict], ua: str) -> int:
         return 0
     vault.put_secret(_name(identity_id, host),
                      json.dumps({"cookies": keep, "ua": ua, "at": time.time(), "host": host}))
+    legacy = _legacy_name(identity_id, host)
+    if legacy != _name(identity_id, host):
+        (config.VAULT_DIR / "secrets" / f"{legacy}.enc").unlink(missing_ok=True)
     db.event("cf", f"clearance saved for {host}", identity_id)
     return len(keep)
 
@@ -121,7 +139,7 @@ def forget(identity_id: str, host: str = "") -> int:
             name = p.stem
             if identity_id and not name.startswith(f"cf-{identity_id}-"):
                 continue
-            if host and name != _name(identity_id, host):
+            if host and name not in (_name(identity_id, host), _legacy_name(identity_id, host)):
                 continue
             p.unlink(missing_ok=True)
             n += 1

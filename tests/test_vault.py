@@ -69,3 +69,22 @@ def test_private_key_never_in_index(vault, home):
     text = (home.VAULT_DIR / "index.json").read_text()
     assert "0x" not in text or True  # index holds addresses only
     assert "22" * 32 not in text
+
+
+def test_overwrite_failure_keeps_old_entry(vault, monkeypatch):
+    """A crash/failed write during overwrite must not destroy the existing secret."""
+    vault.put_secret("atomic", "old-value")
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    orig = AESGCM.encrypt
+
+    def boom(self, *a, **k):
+        raise RuntimeError("simulated write failure")
+
+    monkeypatch.setattr(AESGCM, "encrypt", boom)
+    try:
+        with pytest.raises(RuntimeError):
+            vault.overwrite("secrets", "atomic", b"new-value")
+    finally:
+        monkeypatch.setattr(AESGCM, "encrypt", orig)
+    assert vault.get_secret("atomic") == "old-value"
+    assert not list((vault.config.VAULT_DIR / "secrets").glob(".tmp-*")), "no temp litter left behind"
