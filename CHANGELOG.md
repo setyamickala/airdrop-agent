@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Default install (`./install.sh`, `[browser]` extras only) no longer crashes on
+  `aa init`: `telethon` and `solders` are now imported lazily, so the CLI starts
+  without the `telegram`/`solana` extras. Telegram and Solana commands fail with a
+  clear install hint instead of `ModuleNotFoundError`.
+- `aa identity new`, `aa identity clone` and `aa wallet new` (default `both`) no
+  longer fail without the `solana` extra: they provision EVM wallets and note that
+  Solana was skipped. An explicit `--chain sol` still reports the missing extra.
+- `install.sh` no longer dies on `EDITOR: unbound variable` when `$EDITOR` is unset
+  (it runs under `set -u`); the hint now falls back to `nano`.
+
 ## 4.1.0 — 2026-11
 
 Durability release. Tested against nineteen live quest, testnet and whitelist targets.
