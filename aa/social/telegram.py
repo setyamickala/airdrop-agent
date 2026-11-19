@@ -24,6 +24,23 @@ def _api() -> tuple[int, str]:
     return int(config.env_required("TG_API_ID")), config.env_required("TG_API_HASH")
 
 
+def _proxy():
+    """Egress HTTP proxy for MTProto (direct MTProto is mangled on this VM).
+
+    Mirrors the v3 patch: parse https_proxy from the environment into Telethon's
+    ("http", host, port, user, pass) tuple. Returns None when no proxy is set.
+    The proxy URL itself is never logged or printed.
+    """
+    import os
+    from urllib.parse import urlparse
+
+    raw = os.environ.get("https_proxy") or os.environ.get("http_proxy") or ""
+    if not raw:
+        return None
+    u = urlparse(raw)
+    return ("http", u.hostname, u.port or 3128, u.username, u.password)
+
+
 def _session(identity_id: str) -> str:
     s = vault.get_secret(f"tg:{identity_id}")
     if not s:
@@ -33,7 +50,7 @@ def _session(identity_id: str) -> str:
 
 def client(identity_id: str) -> TelegramClient:
     api_id, api_hash = _api()
-    return TelegramClient(StringSession(_session(identity_id)), api_id, api_hash,
+    return TelegramClient(StringSession(_session(identity_id)), api_id, api_hash, proxy=_proxy(),
                           device_model=config.env("TG_DEVICE", "Pixel 8"), system_version="14",
                           app_version="10.9.1", lang_code="en")
 
@@ -58,7 +75,7 @@ async def _safe(coro, identity_id: str):
 # ---------- login ----------
 async def login_send(identity_id: str, phone: str) -> dict:
     api_id, api_hash = _api()
-    c = TelegramClient(StringSession(), api_id, api_hash)
+    c = TelegramClient(StringSession(), api_id, api_hash, proxy=_proxy())
     await c.connect()
     try:
         sent = await c.send_code_request(phone)
@@ -75,7 +92,7 @@ async def login_verify(identity_id: str, code: str, password: str = "") -> dict:
     if not (phone and phash):
         raise Denied("run `aa tg login-send --phone ...` first")
     api_id, api_hash = _api()
-    c = TelegramClient(StringSession(), api_id, api_hash)
+    c = TelegramClient(StringSession(), api_id, api_hash, proxy=_proxy())
     await c.connect()
     try:
         try:
@@ -242,9 +259,13 @@ async def miniapp_url(identity_id: str, bot: str, url: str | None = None) -> dic
     await c.connect()
     try:
         ent = await c.get_entity(bot)
-        res = await c(functions.messages.RequestWebViewRequest(
-            peer=ent, bot=ent, platform="android", from_bot_menu=not url,
-            url=url or "", top_msg_id=None))
+        if url:
+            res = await c(functions.messages.RequestWebViewRequest(
+                peer=ent, bot=ent, platform="android", from_bot_menu=False, url=url))
+        else:
+            # No URL: open the bot's main mini app (RequestWebViewRequest rejects url="").
+            res = await c(functions.messages.RequestMainWebViewRequest(
+                peer=ent, bot=ent, platform="android"))
         return {"url": res.url}
     finally:
         await c.disconnect()
