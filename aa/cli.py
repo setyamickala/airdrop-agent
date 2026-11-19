@@ -354,24 +354,24 @@ def tg(args) -> tuple[dict, list[str]]:
     if cmd == "me":
         return _asec(telegram.whoami(iid)), []
     if cmd == "join":
-        return _asec(telegram.join(iid, args.target)), []
+        return _asec(telegram.join(iid, args.peer)), []
     if cmd == "follow":
         targets = [telegram.parse_target(t) for t in args.targets]
         return {"results": _asec(telegram.follow_many(iid, targets))}, []
     if cmd == "read":
-        return _asec(telegram.read(iid, args.target, args.limit)), []
+        return _asec(telegram.read(iid, args.peer, args.limit)), []
     if cmd == "send":
-        return _asec(telegram.send(iid, args.target, args.text)), []
+        return _asec(telegram.send(iid, args.peer, args.text)), []
     if cmd == "react":
-        return _asec(telegram.react(iid, args.target, args.emoji)), []
+        return _asec(telegram.react(iid, args.peer, args.emoji)), []
     if cmd == "start":
-        return _asec(telegram.start_bot(iid, args.target, args.ref or "")), []
+        return _asec(telegram.start_bot(iid, args.peer, args.ref or "")), []
     if cmd == "miniapp":
-        return _asec(telegram.miniapp_url(iid, args.target, args.url)), []
+        return _asec(telegram.miniapp_url(iid, args.peer, args.url)), []
     if cmd == "dialogs":
         return _asec(telegram.dialogs(iid)), []
     if cmd == "click":
-        return _asec(telegram.click_button(iid, args.target, args.text, args.msg_id)), []
+        return _asec(telegram.click_button(iid, args.peer, args.text, args.msg_id)), []
     raise Denied("unknown tg command")
 
 
@@ -636,9 +636,9 @@ def radar_cmd(args) -> tuple[dict, list[str]]:
     if args.r_cmd == "sources":
         return sources.listing(), []
     if args.r_cmd == "add":
-        return sources.add(args.kind, args.target, args.trust), []
+        return sources.add(args.kind, args.peer, args.trust), []
     if args.r_cmd == "rm":
-        return sources.remove(args.kind, args.target), []
+        return sources.remove(args.kind, args.peer), []
     raise Denied("unknown radar command")
 
 
@@ -909,13 +909,46 @@ def build() -> argparse.ArgumentParser:
 
     tgcmd("me")
     tj = t.add_parser("join")
-    tj.add_argument("target")
+    tj.add_argument("peer")
     tj.add_argument("--identity", default="")
     tj.set_defaults(fn=envelope_run, target=tg, tg_cmd="join")
     tf = t.add_parser("follow")
     tf.add_argument("targets", nargs="+")
     tf.add_argument("--identity", default="")
     tf.set_defaults(fn=envelope_run, target=tg, tg_cmd="follow")
+    # Dispatcher in tg() already handles these; the parsers were missing.
+    tr = t.add_parser("read")
+    tr.add_argument("peer")
+    tr.add_argument("--limit", type=int, default=10)
+    tr.add_argument("--identity", default="")
+    tr.set_defaults(fn=envelope_run, target=tg, tg_cmd="read")
+    ts = t.add_parser("send")
+    ts.add_argument("peer")
+    ts.add_argument("text")
+    ts.add_argument("--identity", default="")
+    ts.set_defaults(fn=envelope_run, target=tg, tg_cmd="send")
+    trc = t.add_parser("react")
+    trc.add_argument("peer")
+    trc.add_argument("--emoji", default="👍")
+    trc.add_argument("--identity", default="")
+    trc.set_defaults(fn=envelope_run, target=tg, tg_cmd="react")
+    tst = t.add_parser("start")
+    tst.add_argument("peer")
+    tst.add_argument("--ref", default="")
+    tst.add_argument("--identity", default="")
+    tst.set_defaults(fn=envelope_run, target=tg, tg_cmd="start")
+    tm = t.add_parser("miniapp")
+    tm.add_argument("peer")
+    tm.add_argument("--url", default=None)
+    tm.add_argument("--identity", default="")
+    tm.set_defaults(fn=envelope_run, target=tg, tg_cmd="miniapp")
+    tgcmd("dialogs")
+    tc = t.add_parser("click")
+    tc.add_argument("peer")
+    tc.add_argument("text")
+    tc.add_argument("--msg-id", type=int, default=None)
+    tc.add_argument("--identity", default="")
+    tc.set_defaults(fn=envelope_run, target=tg, tg_cmd="click")
 
     xp = sub.add_parser("x").add_subparsers(dest="x_cmd", required=True)
     xl = xp.add_parser("login")
@@ -1094,12 +1127,12 @@ def build() -> argparse.ArgumentParser:
     r.add_parser("sources").set_defaults(fn=envelope_run, target=radar_cmd)
     ra = r.add_parser("add")
     ra.add_argument("kind", choices=["tg", "x", "query"])
-    ra.add_argument("target")
+    ra.add_argument("peer")
     ra.add_argument("--trust", type=int, default=1)
     ra.set_defaults(fn=envelope_run, target=radar_cmd)
     rr = r.add_parser("rm")
     rr.add_argument("kind", choices=["tg", "x", "query"])
-    rr.add_argument("target")
+    rr.add_argument("peer")
     rr.set_defaults(fn=envelope_run, target=radar_cmd)
 
     ap = sub.add_parser("autopilot").add_subparsers(dest="a_cmd", required=True)
