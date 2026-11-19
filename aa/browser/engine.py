@@ -13,6 +13,8 @@ import json
 import os
 import random
 import secrets
+import sys
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -84,6 +86,23 @@ class Browser:
         return d
 
     @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        if sys.platform == "win32":
+            # os.kill(pid, 0) on Windows calls TerminateProcess — it KILLS the pid
+            # instead of probing it. Query the process handle instead.
+            import ctypes
+            h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+            if h:
+                ctypes.windll.kernel32.CloseHandle(h)
+                return True
+            return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    @staticmethod
     def _clear_stale_lock(d: Path) -> None:
         """A killed browser leaves SingletonLock behind and blocks the next launch."""
         lock = d / "SingletonLock"
@@ -95,13 +114,7 @@ class Browser:
             pid = int(str(target).rsplit("-", 1)[-1])
         except Exception:  # noqa: BLE001
             pass
-        alive = False
-        if pid:
-            try:
-                os.kill(pid, 0)
-                alive = True
-            except OSError:
-                alive = False
+        alive = Browser._pid_alive(pid) if pid else False
         if alive:
             return
         for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
@@ -139,8 +152,10 @@ class Browser:
               "viewport": {"width": 1366 + random.randint(-40, 60), "height": 768 + random.randint(-30, 40)},
               "locale": config.env("BROWSER_LOCALE", "en-US"),
               "timezone_id": config.env("TZ", "Asia/Jakarta"),
-              "user_agent": self.user_agent, "ignore_https_errors": True,
+              "ignore_https_errors": True,
               "permissions": ["clipboard-read", "clipboard-write"]}
+        if config.env("BROWSER_UA"):
+            kw["user_agent"] = self.user_agent
         if proxy:
             kw["proxy"] = {"server": proxy} if "@" not in proxy else _proxy_obj(proxy)
         self._ctx = await self._pw.chromium.launch_persistent_context(str(self._profile_dir()),
@@ -172,6 +187,14 @@ class Browser:
             self.pages.append(await self._ctx.new_page())
         for p in self._ctx.pages:
             p.set_default_timeout(int(config.env("BROWSER_TIMEOUT_MS", "45000")))
+        self._ctx.on("page", self._on_popup)
+        if not config.env("BROWSER_UA"):
+            # Keep the real browser UA: a hardcoded UA that contradicts the
+            # sec-ch-ua client hints is a strong bot signal (and burns CF clearance).
+            try:
+                self._native_ua = await self.pages[0].evaluate("navigator.userAgent")
+            except Exception:  # noqa: BLE001
+                self._native_ua = UA
         self.started = True
         db.event("browser", f"started profile={self.profile} ext={len(self.extension_paths)}", self.identity_id)
         return self
@@ -207,7 +230,20 @@ class Browser:
 
     @property
     def user_agent(self) -> str:
-        return config.env("BROWSER_UA", UA)
+        return config.env("BROWSER_UA") or getattr(self, "_native_ua", "") or UA
+
+    def _on_popup(self, p) -> None:
+        """Tabs/popups opened by the page become the active page; closed ones drop out."""
+        self.pages.append(p)
+        try:
+            p.set_default_timeout(int(config.env("BROWSER_TIMEOUT_MS", "45000")))
+        except Exception:  # noqa: BLE001
+            pass
+        p.on("close", lambda: self._forget_page(p))
+
+    def _forget_page(self, p) -> None:
+        if p in self.pages:
+            self.pages.remove(p)
 
     async def goto(self, url: str, *, check_scam: bool = True, wait_until: str = "domcontentloaded") -> dict:
         from .. import scam_check
@@ -354,7 +390,7 @@ class Browser:
 
     async def screenshot(self, name: str) -> str:
         safe = config.slug(name)
-        p = config.PROOF_DIR / f"{self.identity_id}_{safe}_{int(asyncio.get_event_loop().time())}.png"
+        p = config.PROOF_DIR / f"{self.identity_id}_{safe}_{int(time.time())}.png"
         await self.page.screenshot(path=str(p), full_page=False)
         return str(p)
 

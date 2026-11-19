@@ -3,8 +3,8 @@
 Modes
   safe      every funding/sign/connect step needs an approval code
   balanced  testnet inside caps is automatic; mainnet + permits + unknown contracts gate
-  turbo     everything inside caps is automatic (still hard-blocked: KILL, unlimited
-            approvals, eth_sign/blind hash, blocklist, drainer verdicts)
+  turbo     everything inside caps is automatic (unlimited approvals and eth_sign/blind
+            hash always gate; hard-blocked: KILL, blocklist, drainer verdicts)
 
 A mode never overrides a hard block and never touches a wallet that is not in the
 vault (the operator's main seed stays offline).
@@ -153,6 +153,8 @@ def needs_gate(action: str, **kw) -> tuple[bool, list[str]]:
                 return True, ["risky typed data (permit/order)"]
             return False, []
         if action == "tx":
+            if kw.get("unlimited"):
+                return True, ["unlimited approval"]
             if kw.get("mainnet") and not (cfg().get("turbo") or {}).get("allow_mainnet", False):
                 return True, ["mainnet tx"]
             if not kw.get("contract_ok", True):
@@ -164,6 +166,8 @@ def needs_gate(action: str, **kw) -> tuple[bool, list[str]]:
         return True, ["safe mode"]
     # balanced
     if action == "tx":
+        if kw.get("unlimited"):
+            return True, ["unlimited approval"]
         if kw.get("mainnet"):
             return True, ["mainnet tx"]
         if not kw.get("contract_ok", True):

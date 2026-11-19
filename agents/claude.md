@@ -13,14 +13,15 @@ Claude Desktop: `~/Library/Application Support/Claude/claude_desktop_config.json
 or `%APPDATA%\Claude\claude_desktop_config.json` (Windows).
 Cursor: `.cursor/mcp.json`.
 
-Restart the client. The server exposes 18 `aa_*` tools. Nothing is auto-run on start; there is no
+Restart the client. The server exposes 21 `aa_*` tools. Nothing is auto-run on start; there is no
 background tick inside MCP — call `aa_autopilot_tick` if you want a pulse.
 
 ## Tools
 
 `aa_status`, `aa_identity_new`, `aa_wallet_new`, `aa_wallet_list`, `aa_wallet_balance`, `aa_tx_send`,
 `aa_sign_message`, `aa_telegram_join`, `aa_x_follow`, `aa_discord_grind`, `aa_email_otp`, `aa_quest_list`,
-`aa_quest_run`, `aa_radar_scan`, `aa_autopilot_tick`, `aa_gate_list`, `aa_gate_approve`, `aa_daily_run`.
+`aa_quest_run`, `aa_radar_scan`, `aa_autopilot_tick`, `aa_gate_list`, `aa_gate_approve`, `aa_daily_run`,
+`aa_session_status`, `aa_session_warm`, `aa_cf_status`.
 
 ## Gate flow over MCP
 
