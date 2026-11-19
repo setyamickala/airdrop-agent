@@ -88,7 +88,7 @@ say "linked $BIN_DIR/aa"
 cat <<EOF
 
 selesai. langkah berikutnya:
-  1. $EDITOR ~/.airdrop-agent/.env    (RPC, Telegram, email — lihat config/env.example)
+  1. ${EDITOR:-nano} ~/.airdrop-agent/.env    (RPC, Telegram, email — lihat config/env.example)
   2. $BIN_DIR/aa doctor
   3. $BIN_DIR/aa identity new main --wallets 3
   4. $BIN_DIR/aa mode balanced

@@ -131,9 +131,12 @@ def identity_new(label: str, with_email: bool = False, wallet_count: int = 1,
     ident = db.create_identity(label, persona, proxy)
     hd.ensure(ident["id"])
     wallets = {"evm": hd.provision(ident["id"], "evm", max(1, wallet_count), prefix="e"),
-               "sol": hd.provision(ident["id"], "sol", max(1, wallet_count), prefix="s")}
+               "sol": hd.provision(ident["id"], "sol", max(1, wallet_count), prefix="s")
+               if hd.sol_available() else []}
     out = {"identity": ident["id"], "label": label, "persona": persona,
            "evm": [w["address"] for w in wallets["evm"]], "sol": [w["address"] for w in wallets["sol"]]}
+    if not wallets["sol"]:
+        out["sol_skipped"] = "solders is not installed — run: pip install 'airdrop-agent[solana]' for Solana wallets"
     if with_email:
         out["email"] = "run aa email add --identity " + ident["id"]
     out["next"] = f"aa wallet balance --identity {ident['id']}  ·  aa tg login --identity {ident['id']}"
@@ -168,7 +171,8 @@ def identity_clone(source: str, label: str, wallet_count: int = 0) -> tuple[dict
     if wallet_count:
         hd.ensure(ident["id"])
         hd.provision(ident["id"], "evm", wallet_count, prefix="e")
-        hd.provision(ident["id"], "sol", wallet_count, prefix="s")
+        if hd.sol_available():
+            hd.provision(ident["id"], "sol", wallet_count, prefix="s")
     return ({"identity": ident["id"], "label": label, "cloned_from": src["id"],
              "persona": src.get("persona"), "proxy": src.get("proxy"), "wallets": wallet_count},
             ["aa wallet new --identity " + ident["id"] if not wallet_count else "aa session warm --identity " + ident["id"]])
@@ -194,6 +198,8 @@ def wallet_new(identity: str, chain: str = "both", count: int = 1, mode: str = "
     if count > 100:
         raise Denied("max 100 at once")
     chains_ = ["evm", "sol"] if chain == "both" else [chain]
+    if chain == "both" and not hd.sol_available():
+        chains_ = ["evm"]
     out = {}
     for c in chains_:
         if c not in ("evm", "sol"):
@@ -201,7 +207,10 @@ def wallet_new(identity: str, chain: str = "both", count: int = 1, mode: str = "
         out[c] = (hd.provision(r["id"], c, count, prefix="e" if c == "evm" else "s") if mode == "hd"
                   else (evmw.create(r["id"], count) if c == "evm" else solw.create(r["id"], count)))
     db.event("wallet", f"new {count} {chain} ({mode})", r["id"])
-    return ({"identity": r["id"], "wallets": out},
+    data = {"identity": r["id"], "wallets": out}
+    if chain == "both" and "sol" not in out:
+        data["sol_skipped"] = "solders is not installed — run: pip install 'airdrop-agent[solana]' for Solana wallets"
+    return (data,
             [f"aa wallet balance --identity {r['id']}", "aa testnet faucets --chain sepolia"])
 
 
