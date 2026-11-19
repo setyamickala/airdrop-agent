@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Default install (`./install.sh`) no longer dies at `aa init` with
+  `ModuleNotFoundError: No module named 'telethon'`: `solders` and `telethon`
+  are now core dependencies, because the CLI imports them unconditionally at
+  startup (`aa/wallet/sol.py`, `aa/wallet/hd.py`, `aa/quest/runner.py` →
+  `aa/social/telegram.py`). `playwright` and `discord.py-self` stay optional.
+- `install.sh` no longer aborts on unbound `$EDITOR` (`set -u`); it now falls
+  back to `vi`.
+
 ## 4.1.0 — 2026-11
 
 Durability release. Tested against nineteen live quest, testnet and whitelist targets.
