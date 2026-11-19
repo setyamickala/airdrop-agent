@@ -1,0 +1,56 @@
+# Qyro Labs daily — loot drop + badge claim, fully automated.
+#
+# What it does: opens the Daily Extraction loot drop (300-1.000 XP) when it is
+# READY TO OPEN, and claims any badge that is READY TO CLAIM (Rookie Pilot,
+# Vanguard, ...). No wallet connect, no signing, no payment — Qyro daily runs
+# on the email session (bonekaungu64@gmail.com), held by the browser profile.
+# Login is by 8-digit email code, so a cold session parks with needs_login
+# instead of half-finishing (see docs/QUESTS.md, Login pre-flight).
+#
+# What it deliberately does NOT do: STAR DOGFIGHT. The 30s real-time game
+# (+1.000 XP) cannot be played reliably from a browser agent — the cloud
+# browser is too slow to steer, the ship is destroyed at seconds 11-13.
+# The dogfight stays manual (Bae's existing daily run). Do not add a
+# click-spam step for it; that would fake a game, not play it.
+#
+# PROBE 19 Nov 16:21 WIB (logged-in session, bonekung, 19.112 XP, rank #7039):
+# - Loot Drop lives in the MISSION DECK, opened via "Enter mission deck".
+#   The homepage does not show it — that step is required.
+# - Loot already opened that day shows a "NEXT SIGNAL IN" countdown timer and
+#   a disabled button labelled "Recharging". "READY TO OPEN" only appears
+#   when the drop is actually ready (per the daily-run notes); the button
+#   label IS the status, so clicking "READY TO OPEN" clicks the button.
+# - Badges live under "XP BADGES" / "ACHIEVEMENT VAULT". Observed statuses:
+#   "CLAIMED" and "63% · 10.888 TO GO" (Vanguard). "READY TO CLAIM" was not
+#   observed (no badge ready that day) — it comes from the daily-run notes;
+#   confirm it on a day a badge is ready.
+# - Star Dogfight button is exactly "START BATTLE" (manual only, see above).
+# Re-probe before trusting a run after any site change:
+#   aa quest probe https://qyrolabs.space/ --identity <id>
+#   aa quest run qyro-daily --identity <id> --dry
+#   aa quest run qyro-daily --identity <id>
+id: qyro-daily
+name: Qyro Labs daily loot drop and badge claim
+url: https://qyrolabs.space/
+platform: custom
+daily: true
+cooldown_hours: 24
+steps:
+  - goto: "{{url}}"
+  - dismiss: true
+  # Mission Deck holds the loot drop + badges. Required: the homepage
+  # does not show them.
+  - click: "Enter mission deck"
+  # Loot Drop (Daily Extraction, 300-1.000 XP). if_text records whether the
+  # drop is READY TO OPEN; the click below is soft and no-ops (recorded,
+  # not fatal) when it was already opened today (button then reads
+  # "Recharging", disabled, with a "NEXT SIGNAL IN" timer).
+  - if_text: {text: "READY TO OPEN"}
+  - click: "READY TO OPEN"
+  - wait: 3
+  - screenshot: loot-drop
+  # Badge XP. Claim when READY TO CLAIM; soft no-op when nothing is ready.
+  - if_text: {text: "READY TO CLAIM"}
+  - click: "READY TO CLAIM"
+  - wait: 3
+  - screenshot: badge
