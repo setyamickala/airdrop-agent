@@ -30,31 +30,48 @@ def pending_for(payload: dict) -> dict | None:
                   (_hash(payload),))
 
 
-def create(kind: str, summary: str, payload: dict) -> int:
+def create(kind: str, summary: str, payload: dict) -> tuple[int, str]:
+    """Create a pending gate and return (gate_id, code) once.
+
+    The code is returned to the caller a single time (it is sent to the
+    operator's Telegram bot here) and is NEVER stored — only its SHA-256
+    hash lands in the DB. Whoever holds the DB must not be able to approve.
+    If a pending gate already exists for this payload, its id is returned
+    with code=None: the code was already delivered once and cannot be
+    recovered from the stored hash.
+    """
     existing = pending_for(payload)
     if existing:
-        return int(existing["id"])
+        return int(existing["id"]), None
     code = "".join(secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6))
     gid = db.execute(
-        "INSERT INTO gates(kind,summary,payload,payload_hash,code_hash,code,created_at)"
-        " VALUES(?,?,?,?,?,?,?)",
+        "INSERT INTO gates(kind,summary,payload,payload_hash,code_hash,created_at)"
+        " VALUES(?,?,?,?,?,?)",
         (kind, summary, json.dumps(payload, default=str), _hash(payload),
-         hashlib.sha256(code.encode()).hexdigest(), code, db.now()))
+         hashlib.sha256(code.encode()).hexdigest(), db.now()))
     db.event("gate", f"#{gid} {kind}: {summary[:160]}", payload.get("identity_id"), level="warn")
     notify.send(notify.gate_message(gid, kind, summary, code), silent=False)
-    return gid
+    return gid, code
 
 
 def require(kind: str, summary: str, payload: dict) -> None:
-    """Gate unless an identical approved payload is still fresh, else raise Gate."""
+    """Gate unless an identical approved payload is still fresh, else raise Gate.
+
+    TTL is enforced here, exactly as in consume(): an approved gate older
+    than gate_ttl_minutes is marked 'expired' and NEVER reused — a fresh
+    gate (and a fresh code) is created instead.
+    """
     p = {**payload, "_kind": kind} if not payload.get("_kind") else payload
     h = _hash(p)
     with db.db() as con:
-        r = con.execute("SELECT * FROM gates WHERE payload_hash=? AND status='approved' ORDER BY id DESC", (h,)).fetchone()
-        if r:
-            con.execute("UPDATE gates SET status='used', decided_at=? WHERE id=?", (db.now(), r["id"]))
-            return
-    gid = create(kind, summary, p)
+        rows = con.execute("SELECT * FROM gates WHERE payload_hash=? AND status='approved'"
+                           " ORDER BY id DESC", (h,)).fetchall()
+        for r in rows:
+            if _age_min(r["created_at"]) <= _ttl():
+                con.execute("UPDATE gates SET status='used', decided_at=? WHERE id=?", (db.now(), r["id"]))
+                return
+            con.execute("UPDATE gates SET status='expired', decided_at=? WHERE id=?", (db.now(), r["id"]))
+    gid, _code = create(kind, summary, p)
     raise Gate(f"approval #{gid} required — {summary}")
 
 
@@ -65,9 +82,12 @@ def _check_code(gid: int, code: str) -> dict:
     if r["status"] != "pending":
         raise Denied(f"gate #{gid} already {r['status']}")
     given = code.strip().upper()
-    expect = r.get("code") or ""
-    ok = hmac.compare_digest(given, expect) if expect else hmac.compare_digest(
-        hashlib.sha256(given.encode()).hexdigest(), r["code_hash"])
+    # Hash-only check: the plaintext code is never stored (see create()).
+    # A missing/empty hash can never match — fail closed.
+    stored = r.get("code_hash") or ""
+    if not stored:
+        raise Denied(f"gate #{gid} has no approval code on file")
+    ok = hmac.compare_digest(hashlib.sha256(given.encode()).hexdigest(), stored)
     if not ok:
         raise Denied(f"wrong code for gate #{gid}")
     return r
@@ -129,8 +149,10 @@ def _age_min(ts: str) -> int:
 
     try:
         t = dt.datetime.fromisoformat(ts)
-    except ValueError:
-        return 0
+    except (ValueError, TypeError, AttributeError):
+        # Unparseable timestamp: fail closed — treat as long expired so the
+        # gate can never be (re)used on a broken clock value.
+        return 10 ** 9
     return int((dt.datetime.now(dt.timezone.utc) - t).total_seconds() / 60)
 
 

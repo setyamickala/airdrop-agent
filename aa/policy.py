@@ -5,6 +5,9 @@ Modes
   balanced  testnet inside caps is automatic; mainnet + permits + unknown contracts gate
   turbo     everything inside caps is automatic (still hard-blocked: KILL, unlimited
             approvals, eth_sign/blind hash, blocklist, drainer verdicts)
+            Unlimited approvals are enforced as a hard block in
+            wallet.send()/approve() — they raise Denied in every mode,
+            they are never merely gated.
 
 A mode never overrides a hard block and never touches a wallet that is not in the
 vault (the operator's main seed stays offline).

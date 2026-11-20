@@ -43,6 +43,6 @@ directory until `aa wallet balance` matches.
 ## Regressions to know
 
 - v3 happily sent with no simulation; v4 blocks on revert.
-- v3 allowed unlimited approvals silently; v4 gates them.
+- v3 allowed unlimited approvals silently; v4 denies them (hard block in every mode).
 - v3 treated `null` policy as allow; v4 treats it as deny.
 - Turborequired manual edits in v3; now it is a mode, but hard blocks stay.
