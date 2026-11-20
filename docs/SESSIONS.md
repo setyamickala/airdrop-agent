@@ -15,11 +15,24 @@ different named profile.
 ## Encrypted state mirror
 
 On close, `storage_state` (cookies + origins) is sealed into the vault (`SESSION_AUTOSAVE`). On
-start it is restored (`SESSION_RESTORE`), valid for `SESSION_STATE_DAYS`. A wiped profile comes
+start it is restored (`SESSION_RESTORE`), valid for `SESSION_STATE_DAYS` (default 14 days). A wiped profile comes
 back without a re-login.
 
 `session restore` exists for the case where the profile directory is gone but the vault is not.
 `session save` forces a snapshot before a risky upgrade.
+
+## Profile files sealed at rest
+
+The live Chromium profile still needs its session files on disk in plaintext while the browser
+runs. When the browser closes, the engine seals `Cookies`, `Login Data`, `Web Data` and the
+`Local Storage` / `Session Storage` directories into the vault (AES-256-GCM under the vault
+password, kind `profiles`) and deletes the plaintext originals; the next launch unseals them
+just before Playwright starts (`aa/browser/profile_crypto.py`, `AA_PROFILE_ENCRYPT=0` opts out).
+
+Limits: only those files/directories are sealed — history, cache and service-worker storage stay
+plaintext on disk, and the profile is plaintext while the browser runs. Sealing refuses while
+Chromium is actually running (live `SingletonLock`), so it never deletes a profile in use. This
+protects a stolen disk or a backup, not a live attacker on the machine.
 
 ## Warm-up
 

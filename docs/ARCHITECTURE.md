@@ -28,13 +28,14 @@ caller (shell | MCP | cron | agent)
 ## Why the CLI is the only surface
 
 Policy has to be unavoidable. If a caller could import `wallet.send` directly, a host could skip a
-gate. Every entry point — `aa`, MCP, autopilot, cron — funnels through `cli.py`, and `send()` re-checks
-policy itself even then. Two independent locks: caller-level envelope and library-level checks.
+gate. The CLI, autopilot and cron go through `cli.py`; MCP calls the same library functions
+(`wallet.send`, `gates.require`, …) directly, so the checks live in the library itself, not only
+in the CLI. Two independent locks: caller-level envelope and library-level checks.
 
 ## Transaction pipeline
 
 ```
-decode → simulate → caps (per-tx, gas, daily) → blocklist → gate (payload hash)
+kill → blocklist → decode → simulate → caps (per-tx, gas, daily) → gate (payload hash)
       → sign (vault) → broadcast → receipt → proof + spend row
 ```
 
@@ -53,8 +54,9 @@ page JS  ──►  window.ethereum / window.solana
         ──►  vault sign / send
 ```
 
-The bridge rejects any signing request when `document.activeElement` origin is not what the summary
-shows. `eth_sign` (blind hash) is always gated; `personal_sign` and typed data get a SIWE domain check.
+The bridge checks the page origin against the domain allowlist before any signing request
+(see `aa/browser/guards.py`), and `eth_sign` (blind hash) is refused as an unsupported method;
+`personal_sign` and typed data get a SIWE domain check.
 
 ## State
 

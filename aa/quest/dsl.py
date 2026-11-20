@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import ipaddress
 import json
 from pathlib import Path
+from urllib.parse import urlparse
 
 import yaml
 
@@ -37,11 +39,85 @@ STEP_KEYS = {
     "goto": str, "click": str, "fill": dict, "form": dict, "wallet": (str, dict), "switch": str,
     "follow": str, "like": str, "retweet": str, "post": str, "join": str, "react": str,
     "type": dict, "press": str, "select": dict, "scroll": int, "wait": (int, float),
-    "assert_text": str, "screenshot": str, "eval": str, "faucet": dict, "tx": dict,
+    "assert_text": str, "screenshot": str, "faucet": dict, "tx": dict,
     "deploy": dict, "checkin": str, "manual": str, "dismiss": bool, "upload": dict,
     "sleep_rand": list, "sign": dict, "api": dict, "if_text": dict, "back": bool,
 }
 REQUIRED = {"id", "url", "steps"}
+
+
+def _is_private_host(host: str) -> bool:
+    """True for literal private/loopback/link-local addresses and local names.
+
+    This only inspects the literal hostname. A name that resolves to a private
+    address at request time is NOT caught here — the narrow allowlist in
+    api_allowed() is the main defence, so only hosts the operator explicitly
+    trusts (quest host, domain_allowlist, api_allowlist) can be reached at all.
+    """
+    h = host.strip().lower().rstrip(".")
+    if h in ("localhost", "0.0.0.0", "::1"):
+        return True
+    if h.endswith(".local"):
+        return True
+    try:
+        ip = ipaddress.ip_address(h.strip("[]"))
+    except ValueError:
+        return False
+    return (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+            or ip.is_multicast or ip.is_unspecified)
+
+
+def _host_in_list(host: str, entries) -> bool:
+    h = host.lower().rstrip(".")
+    for e in entries or []:
+        e = str(e).strip().lower().rstrip(".").removeprefix("www.")
+        if not e:
+            continue
+        if h == e or h.endswith("." + e):
+            return True
+    return False
+
+
+def api_allowed(q: dict, val) -> tuple[bool, str]:
+    """Check an `api` step against the allowlist rules.
+
+    Returns (True, "") when allowed, else (False, reason). Used by validate()
+    and again by the runner (defence in depth), so a quest that slips past
+    validation cannot run an unapproved call.
+    """
+    if not isinstance(val, dict):
+        return False, "api step must be a mapping with 'url'"
+    url = val.get("url")
+    if not isinstance(url, str) or not url:
+        return False, "api step needs a 'url' string"
+    method = str(val.get("method", "GET")).upper()
+    if method not in ("GET", "POST"):
+        return False, f"api method '{method}' is not allowed (only GET/POST)"
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False, "api url is not a valid URL"
+    if parsed.scheme != "https":
+        return False, "api url must use https"
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False, "api url has no host"
+    if _is_private_host(host):
+        return False, f"api host '{host}' is a private/local address and is never allowed"
+    try:
+        quest_host = (urlparse(str(q.get("url") or "")).hostname or "").lower()
+    except ValueError:
+        quest_host = ""
+    if quest_host and (host == quest_host or host.endswith("." + quest_host)):
+        return True, ""
+    from .. import policy
+
+    if policy.domain_ok(host):
+        return True, ""
+    if _host_in_list(host, policy.cfg().get("api_allowlist") or []):
+        return True, ""
+    return False, (f"api host '{host}' is not allowed (must match the quest url host, "
+                   "domain_allowlist, or api_allowlist in policy.yaml)")
 
 
 def path_for(qid: str) -> Path:
@@ -72,10 +148,18 @@ def validate(q: dict) -> list[str]:
             errs.append(f"step {i}: must be a mapping with exactly one action")
             continue
         key, val = next(iter(st.items()))
+        if key == "eval":
+            errs.append(f"step {i}: 'eval' was removed — arbitrary JS is no longer allowed; "
+                        "use click/assert_text/manual instead")
+            continue
         if key not in STEP_KEYS:
             errs.append(f"step {i}: unknown action '{key}' (known: {', '.join(sorted(STEP_KEYS))})")
         elif not isinstance(val, STEP_KEYS[key]):
             errs.append(f"step {i}: '{key}' expects {STEP_KEYS[key]}")
+        elif key == "api":
+            ok, reason = api_allowed(q, val)
+            if not ok:
+                errs.append(f"step {i}: api not allowed: {reason}")
     return errs
 
 

@@ -64,11 +64,28 @@ def _human(dec: dict, value_wei: int, chain: str) -> str:
         return "contract call"
     if dec["kind"] in ("approve", "increaseAllowance", "permit2Approve"):
         amt = dec.get("amount", "0")
-        tag = "UNLIMITED" if policy.unlimited_approval(amt) else f"{int(amt)/d:.4f}"
+        bits = 160 if dec["kind"] == "permit2Approve" else 256
+        tag = "UNLIMITED" if policy.unlimited_approval(amt, bits=bits) else f"{int(amt)/d:.4f}"
         return f"{dec['kind']} {tag} to spender {dec.get('target')}"
     if dec["kind"] == "setApprovalForAll":
         return f"setApprovalForAll operator {dec.get('operator')} -> {dec.get('approved')}"
     return f"contract call {dec.get('selector')} (value {value_wei/d:.6f})"
+
+
+def _check_unlimited(dec: dict) -> None:
+    """Hard block for unlimited approvals, in every mode (K6).
+
+    Runs after decode() and before simulation, so no gas is spent and no gate
+    is created for a transaction that must never run. A finite approval, or
+    revoking setApprovalForAll (approved=False), passes through.
+    """
+    kind = dec.get("kind")
+    if kind in ("approve", "increaseAllowance", "permit2Approve"):
+        bits = 160 if kind == "permit2Approve" else 256
+        if policy.unlimited_approval(dec.get("amount"), bits=bits):
+            raise Denied(f"unlimited approval blocked ({kind}) — use a finite amount")
+    elif kind == "setApprovalForAll" and dec.get("approved"):
+        raise Denied("unlimited approval blocked (setApprovalForAll) — use a finite approval instead")
 
 
 def send(chain: str, identity_id: str, label: str, to: str | None, *, value_wei: int = 0, calldata: str = "0x",
@@ -84,8 +101,7 @@ def send(chain: str, identity_id: str, label: str, to: str | None, *, value_wei:
     acct = vault.load_evm(label)
     owner = acct.address
     dec = decode(calldata)
-    if dec["kind"] in ("approve", "increaseAllowance", "permit2Approve") and policy.unlimited_approval(dec.get("amount")):
-        log.info("unlimited approval detected (allowed, flagged)")
+    _check_unlimited(dec)
     summary = _human(dec, value_wei, chain)
     contract_ok = policy.allowlisted_contract(chain, to or "") or dec["kind"] == "native" or contract_creation
 
@@ -133,14 +149,26 @@ def send(chain: str, identity_id: str, label: str, to: str | None, *, value_wei:
     txhash = h.hex() if isinstance(h, str) else h.hex()
     if not txhash.startswith("0x"):
         txhash = "0x" + txhash
-    receipt = w3.eth.wait_for_transaction_receipt(h, timeout=180)
+    # Record the broadcast hash BEFORE waiting for the receipt, so the hash
+    # survives a receipt timeout (and the runner can park on it instead of
+    # re-broadcasting a transaction that may already be mined).
+    p = config.PROOF_DIR / f"tx_{chain}_{txhash[2:10]}.json"
+    p.write_text(json.dumps({"tx": txhash, "chain": chain, "from": owner, "to": to,
+                             "value": str(value_wei), "summary": summary, "status": "broadcast",
+                             "receipt": "pending", "via": via, "ts": db.now(),
+                             "explorer": chains.explorer(chain, txhash)}, indent=2))
+    db.event("tx", txhash, identity_id, data={"chain": chain, "label": label, "ok": None,
+                                              "broadcast": True})
+    try:
+        receipt = w3.eth.wait_for_transaction_receipt(h, timeout=180)
+    except Exception:  # noqa: BLE001 — timeout / RPC drop after broadcast
+        raise Denied(f"tx broadcast but receipt not confirmed within timeout: {txhash}")
     ok = int(receipt.get("status", 0)) == 1
     db.add_spend(chain, label, value_wei + gas * (receipt.get("effectiveGasPrice") or max_fee))
     proof = {"tx": txhash, "chain": chain, "from": owner, "to": to, "value": str(value_wei),
              "summary": summary, "gas_used": receipt.get("gasUsed"), "status": ok,
              "block": receipt.get("blockNumber"), "via": via, "ts": db.now(),
              "explorer": chains.explorer(chain, txhash)}
-    p = config.PROOF_DIR / f"tx_{chain}_{txhash[2:10]}.json"
     p.write_text(json.dumps(proof, indent=2))
     db.event("tx", txhash, identity_id, data={"chain": chain, "label": label, "ok": ok})
     if not ok:
@@ -151,9 +179,12 @@ def send(chain: str, identity_id: str, label: str, to: str | None, *, value_wei:
 
 def approve(chain: str, identity_id: str, label: str, token: str, spender: str,
             amount: int | None = None, broadcast: bool = False) -> dict:
-    """ERC20 approve builder. amount None = max uint256 (denied? no: allowed but flagged)."""
+    """ERC20 approve builder. `amount` is required and must be finite — an
+    unlimited approval is hard-blocked, so amount=None is denied here, before
+    any RPC call is made."""
     if amount is None:
-        amount = 2 ** 256 - 1
+        raise Denied("approve amount is required; unlimited approval is blocked — "
+                     "pass an explicit finite --amount")
     from eth_abi import encode as abi_encode
 
     data = "0x095ea7b3" + abi_encode(["address", "uint256"], [to_checksum_address(spender), amount]).hex()

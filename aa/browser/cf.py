@@ -8,7 +8,10 @@ Own implementation, three independent layers:
 2. **Solve** — managed challenges often clear after real interaction. We jiggle,
    scroll, focus and click the Turnstile checkbox like a person, then fall back to a
    captcha provider token (Turnstile with `action`/`cdata`) and finally to
-   FlareSolverr for headless boxes.
+   FlareSolverr for headless boxes. Both fallbacks are OPT-IN ONLY
+   (`CF_ALLOW_SOLVER=1` / `CF_ALLOW_FLARESOLVERR=1`, default off): with neither
+   set, `ensure()` goes straight from the natural interaction to blocked/assist.
+   See docs/CLOUDFLARE.md for why (account bans, target ToS).
 3. **Assist** — when all of that fails, `aa cf assist` opens one visible window on the
    *same profile*, the operator clicks once, the clearance is captured and reused.
 
@@ -183,7 +186,7 @@ async def click_turnstile(page) -> bool:
             return True
         except Exception:  # noqa: BLE001
             try:
-                await f.locator("input[type=checkbox]").first.click(timeout=2000, force=True)
+                await f.locator("input[type=checkbox]").first.click(timeout=2000)
                 return True
             except Exception:  # noqa: BLE001
                 continue
@@ -212,7 +215,11 @@ async def _wait_clear(page, seconds: int) -> bool:
     return False
 
 
-async def _token_solve(page, kind: str) -> dict:
+async def _token_solve(page, kind: str, proxy: str = "") -> dict:
+    # Opt-in only: a captcha-solving service is a ToS / account-ban risk on
+    # the target, so it never runs just because a provider key is configured.
+    if not config.env_bool("CF_ALLOW_SOLVER", False):
+        return {"state": "unsolved", "reason": "solver disabled (set CF_ALLOW_SOLVER=1 to opt in)"}
     from . import captcha
 
     prov = config.env("CAPTCHA_PROVIDER", "").lower()
@@ -226,8 +233,11 @@ async def _token_solve(page, kind: str) -> dict:
     action = captcha.attr_of(html, "data-action") or ""
     cdata = captcha.attr_of(html, "data-cdata") or ""
     try:
+        # Pass the identity's proxy so the task is solved from the same IP
+        # the browser uses (see captcha._solve); empty proxy keeps the old
+        # proxyless task for setups without a proxy.
         token = await asyncio.to_thread(captcha.solve_token, prov, key, kind, sitekey, page.url,
-                                        action=action, cdata=cdata)
+                                        action=action, cdata=cdata, proxy=proxy)
     except Exception as e:  # noqa: BLE001
         return {"state": "unsolved", "reason": str(e)[:120]}
     injected = await captcha.inject_token(page, token)
@@ -235,6 +245,10 @@ async def _token_solve(page, kind: str) -> dict:
 
 
 def _flare(url: str) -> dict:
+    # Opt-in only (see _token_solve): FlareSolverr automates a challenge
+    # bypass and must never run just because FLARESOLVERR_URL is set.
+    if not config.env_bool("CF_ALLOW_FLARESOLVERR", False):
+        raise Denied("flaresolverr disabled (set CF_ALLOW_FLARESOLVERR=1 to opt in)")
     base = config.env("FLARESOLVERR_URL")
     if not base:
         raise Denied("FLARESOLVERR_URL not set")
@@ -269,13 +283,17 @@ async def ensure(b, url: str) -> dict:
             db.event("cf", f"passed {host} naturally ({n} cookies)", b.identity_id)
             return {"state": "passed", "kind": st["kind"], "cookies": n}
 
-    res = await _token_solve(b.page, st["kind"])
+    # Both fallbacks are opt-in (default off): without CF_ALLOW_SOLVER=1 /
+    # CF_ALLOW_FLARESOLVERR=1 this goes straight to blocked/assist.
+    res = {"state": "unsolved", "reason": "solver disabled"}
+    if config.env_bool("CF_ALLOW_SOLVER", False):
+        res = await _token_solve(b.page, st["kind"], proxy=b._proxy() or "")
     if res.get("state", "").startswith(("injected", "solved")):
         if await _wait_clear(b.page, 12):
             n = remember(b.identity_id, host, await b.page.context.cookies(), b.user_agent)
             return {"state": "solved", "kind": st["kind"], "cookies": n, "token": res.get("state")}
 
-    if config.env("FLARESOLVERR_URL"):
+    if config.env_bool("CF_ALLOW_FLARESOLVERR", False) and config.env("FLARESOLVERR_URL"):
         try:
             sol = await asyncio.to_thread(_flare, url)
             await b.page.context.add_cookies(sol["cookies"])

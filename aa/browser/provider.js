@@ -67,7 +67,7 @@
   } catch (_) { window.ethereum = provider; }
 
   const info = {
-    uuid: "6d0b8a6e-0000-4000-8000-000000000001",
+    uuid: conf.uuid || "6d0b8a6e-0000-4000-8000-000000000001",
     name: "MetaMask", icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23f6851b'/%3E%3C/svg%3E",
     rdns: "io.metamask",
   };

@@ -1,7 +1,7 @@
 ---
 name: airdrop-agent
 description: Autonomous airdrop operator. Use when the task involves airdrops, testnets, quests, point farming, NFT whitelists, mass wallet/identity generation, Telegram/X/Discord growth, faucet claiming, contract deploy on testnets, or monitoring channels for new drops. Runs on Hermes, Muse, OpenClaw, Claude, or plain cron via one CLI.
-version: 4.0.0
+version: 4.1.0
 license: MIT
 requires: python>=3.10
 entrypoint: aa
@@ -168,7 +168,7 @@ aa mode balanced
 
 ## Decision order for "cari airdrop"
 
-1. `aa radar scan` (real sources) → 2. filter `min_score` + scam verdict → 3. open the URL once headful if
+1. `aa radar scan --identity main` (real sources) → 2. filter `min_score` + scam verdict → 3. open the URL once headful if
 unsure → 4. draft/validate quest → 5. `--dry` → 6. run on one identity → 7. scale identities only after it works.
 
 Do not scale before one identity succeeds. Do not fund a fresh wallet before the quest flow is proven.

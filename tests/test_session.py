@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 
 from aa import db, session, vault
 
@@ -35,3 +36,33 @@ def test_status_shape():
     rows = session.status(iid)
     assert any(r.get("platform") == "x" for r in rows)
     assert any("state_blob" in r for r in rows)
+
+
+class FakePage:
+    def __init__(self):
+        self.visited = []
+        self.stored = []
+
+    async def goto(self, url, wait_until=None, timeout=None):
+        self.visited.append(url)
+
+    async def evaluate(self, js, items):
+        self.stored.extend(items)
+
+
+class FakeBrowser2:
+    def __init__(self):
+        self.context = FakeCtx()
+        self.page = FakePage()
+
+
+def test_restore_restores_origins():
+    vault.put_secret("session-id-orig", json.dumps({
+        "at": time.time(),
+        "state": {"cookies": [{"name": "c", "value": "v", "domain": ".x.com", "path": "/"}],
+                  "origins": [{"origin": "https://x.com",
+                               "localStorage": [{"name": "k", "value": "v"}]}]}}))
+    b = FakeBrowser2()
+    assert asyncio.run(session.restore("id-orig", b)) == 1
+    assert b.page.visited == ["https://x.com"]
+    assert b.page.stored == [{"name": "k", "value": "v"}]

@@ -79,6 +79,17 @@ def test_mcp_handshake(home):
     assert out[3]["error"]["code"] == -32601
 
 
+def test_kill_with_reason(home):
+    """K7: `aa kill "reason"` — the documented form — must parse and record it."""
+    aa("init")
+    out, rc, _ = aa("kill", "insiden test")
+    assert rc == 0, out
+    assert out["data"]["kill"] is True
+    assert "insiden test" in (home.KILL_FILE.read_text() if home.KILL_FILE.exists() else "")
+    out, rc, _ = aa("unkill")
+    assert rc == 0 and out["data"]["kill"] is False
+
+
 def test_allowlist_roundtrip(home):
     aa("init")
     out, rc, _ = aa("allow", "add", "evil.test")
@@ -86,3 +97,60 @@ def test_allowlist_roundtrip(home):
     from aa import policy
 
     assert policy.domain_ok("evil.test")
+
+
+# --- Round 4 docs-drift fixes: every corrected doc example must parse. ---
+def _parse(argv):
+    from aa.cli import build
+
+    return build().parse_args(argv)
+
+
+def test_docs_tg_read_react_start_parse():
+    a = _parse(["tg", "read", "--identity", "main", "@channel", "--limit", "20"])
+    assert (a.tg_cmd, a.target, a.limit) == ("read", "@channel", 20)
+    a = _parse(["tg", "react", "--identity", "main", "https://t.me/c/1/2", "👍"])
+    assert (a.tg_cmd, a.target, a.emoji) == ("react", "https://t.me/c/1/2", "👍")
+    a = _parse(["tg", "start", "--identity", "main", "@bot", "--ref", "CODE"])
+    assert (a.tg_cmd, a.target, a.ref) == ("start", "@bot", "CODE")
+
+
+def test_docs_dc_flags_parse():
+    a = _parse(["dc", "login", "--identity", "main", "--email", "you@mail", "--password", "x"])
+    assert a.email == "you@mail"
+    a = _parse(["dc", "follow", "--identity", "main", "--channel", "project"])
+    assert a.channel == "project"
+    a = _parse(["dc", "grind", "--identity", "main", "--server", "project",
+                "--minutes", "30", "--max", "40"])
+    assert a.max == 40
+
+
+def test_docs_daily_status_takes_no_args():
+    a = _parse(["daily", "status"])
+    assert a.d_cmd == "status"
+    assert not hasattr(a, "identity") or a.identity in (None, "")
+
+
+def test_docs_corrected_wallet_and_vault_commands_parse():
+    a = _parse(["sign", "message", "--identity", "main", "--label", "evm-1",
+                "--message", "hello"])
+    assert a.message == "hello"
+    a = _parse(["vault", "export", "~/backup.aa"])
+    assert a.v_cmd == "export"
+    a = _parse(["vault", "rekey"])
+    assert a.v_cmd == "rekey"
+    a = _parse(["wallet", "sol-send", "--identity", "main", "--label", "s1",
+                "--chain", "solana-devnet",
+                "--to", "11111111111111111111111111111111", "--amount", "0.001"])
+    assert a.to == "11111111111111111111111111111111"
+
+
+def test_docs_removed_commands_do_not_parse():
+    import pytest
+
+    with pytest.raises(SystemExit):
+        _parse(["wallet", "export", "--identity", "main"])
+    with pytest.raises(SystemExit):
+        _parse(["wallet", "sign", "--identity", "main"])
+    with pytest.raises(SystemExit):
+        _parse(["migrate"])

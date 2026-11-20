@@ -50,10 +50,10 @@ values stay literal.
 | `assert_text` | string | hard fail when absent |
 | `if_text` | `{text, timeout?}` | records which branch was seen |
 | `screenshot` | label | proof file |
-| `eval` | JS | escape hatch, returns a value |
+| `eval` | — | removed: arbitrary JS is no longer allowed (validate rejects it, the runner raises `Denied`); use `click` / `assert_text` / `manual` instead |
 | `back` | bool | history back |
 | `upload` | `{selector, path}` | file input |
-| `api` | `{method, url, json?, headers?}` | non-browser call |
+| `api` | `{method, url, json?, headers?}` | non-browser call, https only, GET/POST only. Host must match the quest url host, `domain_allowlist`, or `api_allowlist` in `policy.yaml`; private/local hosts (localhost, 10/8, 192.168/16, 169.254/16, …) are never allowed. Calls carrying `authorization`/`cookie`/`api-key` headers or `token`/`password`/`secret` in the JSON body need a human approval gate first (the gate summary shows method + host + path only, never header/body contents). |
 | `faucet` | `{name, chain?}` | catalog claim |
 | `tx` | `{to, amount, data?, chain?}` | guarded pipeline, broadcasts |
 | `deploy` | `{kind, args?}` | counter/erc20/erc721 |

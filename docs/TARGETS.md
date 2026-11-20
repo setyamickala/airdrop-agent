@@ -8,6 +8,12 @@ All nineteen responded `200` with no interstitial in the HTML. No site produced 
 Cloudflare challenge in this run. Kiedex carries a hidden Turnstile field on login; Tzero's bundle
 is heavy and its first DOM load can exceed 90 s.
 
+The shipped `config/quests/` directory holds 22 files: the 19 live-tested targets below plus
+3 generic examples with placeholder URLs (not live-tested): `galxe-daily`
+(`https://app.galxe.com/quest/example`), `discord-role`
+(`https://discord.com/channels/000000000000000000`), `sepolia-daily`
+(`https://sepolia-faucet.example/`). Copy an example and replace its URL before running it.
+
 | target | HTTP | CF | wallet | form surface | quest | stop |
 |---|---|---|---|---|---|---|
 | app.dowprotocol.com/points | 200 | none | injected | none, quiz buttons | `dow-points` | quiz answer |

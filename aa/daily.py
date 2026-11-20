@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 
 from . import config, db, guard, policy, ratelimit
-from .jsonio import Denied
+from .jsonio import Denied, Kill
 from .log import get_logger
 from .quest import dsl, runner
 from .testnet import faucets
@@ -39,8 +39,11 @@ async def run(identity_id: str, *, max_quests: int = 3, faucets_on: bool = True,
     for qid in p["quests"][:max_quests]:
         q = dsl.load(qid)
         try:
+            guard.check_kill()
             await runner.run(q, identity_id, headless=headless)
             done.append(qid)
+        except Kill:
+            raise
         except Exception as e:  # noqa: BLE001
             failed.append({"quest": qid, "error": str(e)[:200]})
             if type(e).__name__ == "Gate":
@@ -50,7 +53,10 @@ async def run(identity_id: str, *, max_quests: int = 3, faucets_on: bool = True,
     if faucets_on:
         for chain in p["chains"]:
             try:
+                guard.check_kill()
                 faucet_out.append(await faucets.run_due(identity_id, chain))
+            except Kill:
+                raise
             except Exception as e:  # noqa: BLE001
                 faucet_out.append({"chain": chain, "error": str(e)[:160]})
     summary = {"identity": identity_id, "quests_done": done, "quests_failed": failed,

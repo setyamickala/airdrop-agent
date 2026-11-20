@@ -8,6 +8,9 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import re
+import sqlite3
+from urllib.parse import urlparse
 
 from .. import config, db, gates, guard, policy
 from ..browser import flows
@@ -21,6 +24,54 @@ from . import adapters
 
 log = get_logger("quest")
 HARD = {"assert_text", "goto", "tx", "deploy", "sign"}
+# Steps that move value or sign: exactly one attempt, never retried blindly —
+# a second attempt could broadcast a second transaction. If the single
+# attempt fails after a broadcast, run() parks on the tx hash instead.
+NO_RETRY_STEPS = {"tx", "deploy", "sign"}
+_TX_HASH_RE = re.compile(r"0x[0-9a-fA-F]{64}")
+
+
+def acquire_run_lock(quest_id: str, identity_id: str) -> None:
+    """Atomic per-quest+identity lock (run_locks PK). A second concurrent run
+    for the same quest+identity is denied instead of double-executing."""
+    try:
+        db.execute("INSERT INTO run_locks(quest_id,identity_id,started_at) VALUES(?,?,?)",
+                   (quest_id, identity_id, db.now()))
+    except sqlite3.IntegrityError:
+        raise Denied(f"quest {quest_id} is already running for {identity_id} (run lock held)")
+
+
+def release_run_lock(quest_id: str, identity_id: str) -> None:
+    db.execute("DELETE FROM run_locks WHERE quest_id=? AND identity_id=?", (quest_id, identity_id))
+
+
+def _park_broadcast(q: dict, identity_id: str, run_id: int, proof: list[dict],
+                    step: str, exc: Exception) -> dict | None:
+    """Park a run whose tx/deploy step failed after broadcasting, instead of
+    failing it (and never re-broadcasting). Returns the parked result dict,
+    or None when there is no evidence of a broadcast (no tx hash)."""
+    if step not in ("tx", "deploy"):
+        return None
+    m = _TX_HASH_RE.search(str(exc))
+    if not m:
+        for p in proof:
+            if isinstance(p, dict) and p.get("tx"):
+                m = _TX_HASH_RE.search(str(p["tx"]))
+                if m:
+                    break
+    if not m:
+        return None
+    txhash = m.group(0)
+    proof.append({"broadcast_tx": txhash,
+                  "parked": "broadcast, receipt/confirm failed — check explorer before retrying"})
+    db.execute("UPDATE runs SET status='parked', proof=?, ended_at=? WHERE id=?",
+               (json.dumps(proof, default=str), db.now(), run_id))
+    db.execute("UPDATE quests SET status='pending', updated_at=? WHERE id=?", (db.now(), q["id"]))
+    db.event("quest", f"parked {q['id']}: broadcast {txhash}, confirm failed", identity_id, level="warn")
+    return {"quest": q["id"], "ok": True, "parked": True, "broadcast_tx": txhash,
+            "proof": proof, "run": run_id,
+            "next": [f"check the tx on the explorer, then re-run only if it never landed: "
+                     f"aa quest run {q['id']}"]}
 
 
 def _render(val, identity_id: str, q: dict):
@@ -80,6 +131,32 @@ async def _do_social(step: str, val: str, identity_id: str) -> dict:
     if kind == "react":
         return await telegram.react(identity_id, val)
     return {"skipped": kind}
+
+
+_SENSITIVE_API_HEADERS = {"authorization", "cookie", "api-key", "x-api-key"}
+_SENSITIVE_API_JSON_KEYS = {"token", "password", "secret", "api_key", "apikey", "authorization"}
+
+
+def _api_needs_gate(val: dict) -> bool:
+    """True when an `api` step carries credentials, so a human must approve it.
+
+    The gate summary never includes header/body contents — only method + host
+    + path are shown to the operator.
+    """
+    headers = val.get("headers") or {}
+    if isinstance(headers, dict):
+        if any(str(k).lower() in _SENSITIVE_API_HEADERS for k in headers):
+            return True
+
+    def _scan(obj) -> bool:
+        if isinstance(obj, dict):
+            return any(str(k).lower() in _SENSITIVE_API_JSON_KEYS or _scan(v)
+                       for k, v in obj.items())
+        if isinstance(obj, list):
+            return any(_scan(v) for v in obj)
+        return False
+
+    return _scan(val.get("json"))
 
 
 async def _do_step(b: Browser, step: str, val, identity_id: str, q: dict, proof: list[dict]) -> dict:
@@ -152,7 +229,10 @@ async def _do_step(b: Browser, step: str, val, identity_id: str, q: dict, proof:
         proof.append({"screenshot": p})
         return {"screenshot": p}
     if step == "eval":
-        return {"eval": str(await b.page.evaluate(val))[:300]}
+        # Defence in depth: `eval` was removed from the DSL, so a quest that
+        # reaches the runner with this step must fail, never execute YAML JS.
+        raise Denied("eval step was removed — arbitrary JS is no longer allowed; "
+                     "use click/assert_text/manual instead")
     if step == "back":
         await b.back()
         return {"back": True}
@@ -182,9 +262,22 @@ async def _do_step(b: Browser, step: str, val, identity_id: str, q: dict, proof:
         return await asyncio.to_thread(signer.personal, identity_id, val.get("label", ""), val.get("message", ""),
                                        val.get("origin", b.page.url))
     if step == "api":
+        from . import dsl as quest_dsl
+
+        ok, reason = quest_dsl.api_allowed(q, val)
+        if not ok:
+            raise Denied(f"api step not allowed: {reason}")
+        method = str(val.get("method", "GET")).upper()
+        if _api_needs_gate(val):
+            parsed = urlparse(val["url"])
+            host = parsed.hostname or ""
+            path = parsed.path or "/"
+            payload = {"_kind": "api", "method": method, "url": val["url"],
+                       "host": host, "path": path}
+            # Summary shows method + host + path only — never header/body contents.
+            gates.require("api", f"API {method} {host}{path}", payload)
         import requests
 
-        method = val.get("method", "GET").upper()
         r = requests.request(method, val["url"], headers=val.get("headers"), json=val.get("json"), timeout=30)
         return {"status": r.status_code, "body": r.text[:300]}
     if step == "if_text":
@@ -218,6 +311,14 @@ async def run(q: dict, identity_id: str, *, dry: bool = False, headless: bool = 
     if dry:
         return {"quest": q["id"], "steps": [next(iter(s)) for s in q["steps"]], "dry": True}
 
+    acquire_run_lock(q["id"], identity_id)
+    try:
+        return await _run_locked(q, identity_id, headless=headless, proof=proof)
+    finally:
+        release_run_lock(q["id"], identity_id)
+
+
+async def _run_locked(q: dict, identity_id: str, *, headless: bool, proof: list[dict]) -> dict:
     # Login pre-flight: a quest that needs X/Telegram/Discord parks before burning steps.
     needs = _login_needs(q)
     if needs and not dry:
@@ -248,7 +349,11 @@ async def run(q: dict, identity_id: str, *, dry: bool = False, headless: bool = 
             for idx, raw in enumerate(q["steps"]):
                 step, val = next(iter(raw.items()))
                 val = _render(val, identity_id, q)
-                for attempt in (1, 2):
+                # tx/deploy/sign get exactly one attempt (NO_RETRY_STEPS); a
+                # failure after broadcast parks on the hash instead of
+                # re-sending. Every other step keeps the old one-retry.
+                max_attempts = 1 if step in NO_RETRY_STEPS else 2
+                for attempt in range(1, max_attempts + 1):
                     try:
                         out = await _do_step(b, step, val, identity_id, q, proof)
                         proof.append({"i": idx, "step": step, "ok": True, "out": out})
@@ -260,10 +365,13 @@ async def run(q: dict, identity_id: str, *, dry: bool = False, headless: bool = 
                                       "error": f"{type(e).__name__}: {str(e)[:200]}"})
                         shot = await b.screenshot(f"err_{idx}")
                         proof.append({"screenshot": shot})
-                        if step in HARD and attempt == 2:
+                        if step in HARD and attempt == max_attempts:
+                            parked = _park_broadcast(q, identity_id, run_id, proof, step, e)
+                            if parked is not None:
+                                return parked
                             raise
                         await asyncio.sleep(2)
-                        if attempt == 2:
+                        if attempt == max_attempts:
                             log.warning("soft-fail step %s: %s", step, e)
             await ad.after(b, q, proof)
             parked = any(p.get("step") == "manual" for p in proof)

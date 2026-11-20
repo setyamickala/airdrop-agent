@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 
 import requests
 
-from . import config, db
+from . import config, db, policy
 from .config import mask
 from .log import get_logger
 
@@ -27,7 +27,31 @@ BRANDS = ["uniswap", "galxe", "zealy", "layer3", "questn", "intract", "guild", "
 SUSPICIOUS_TLD = {"xyz", "top", "click", "site", "online", "live", "app", "fun", "icu", "buzz", "gq", "tk"}
 DRAIN_WORDS = ["seed phrase", "recovery phrase", "validate wallet", "sync wallet", "claim reward",
                "airdrop claim", "connect to claim", "migrate wallet", "upgrade wallet"]
+# Host-level drainer words: combined with a login/verify/wallet keyword they
+# turn a `warn` into `bad` (see check_url).
+DRAIN_HOST_WORDS = ("seed", "approve", "mint", "claim", "airdrop", "validate",
+                    "sync", "upgrade", "migrate", "connect")
 BAD_DOMAINS = set()
+
+
+def _bad_domains() -> set[str]:
+    """Known-bad domains: the static set plus domain-like entries of the
+    policy.yaml `blocklist` (address entries — 0x… / 40 hex chars — are
+    skipped, they are not domains). Read on every call so an operator edit
+    to policy.yaml takes effect without a restart."""
+    out = {d.lower() for d in BAD_DOMAINS}
+    try:
+        for e in (policy.cfg().get("blocklist") or []):
+            s = str(e).strip().lower()
+            if not s or s.startswith("0x"):
+                continue
+            if re.fullmatch(r"[0-9a-f]{40}", s):
+                continue
+            if "." in s:
+                out.add(s.removeprefix("*.").removeprefix("www."))
+    except Exception:  # noqa: BLE001 — a broken policy file must not break the check
+        pass
+    return out
 
 
 def _lev(a: str, b: str) -> int:
@@ -60,10 +84,11 @@ def check_url(url: str, deep: bool = False) -> dict:
         return {"verdict": "bad", "reasons": ["no host"], "host": ""}
     if u.scheme != "https":
         reasons.append("not https")
-        verdict = "warn"
+        verdict = "warn" if verdict == "ok" else verdict
     if re.fullmatch(r"[\d.]+", host):
+        # IP literal: never `ok`, even on its own.
         reasons.append("IP address, not a domain")
-        verdict = "warn"
+        verdict = "warn" if verdict == "ok" else verdict
     if host.startswith("xn--") or ".xn--" in host:
         reasons.append("punycode domain (IDN homograph risk)")
         verdict = "bad"
@@ -73,8 +98,9 @@ def check_url(url: str, deep: bool = False) -> dict:
     if host.count("-") >= 3:
         reasons.append("many hyphens")
         verdict = "warn" if verdict == "ok" else verdict
-    if host in BAD_DOMAINS:
-        reasons.append("known bad domain")
+    bad_domains = _bad_domains()
+    if host in bad_domains or any(host.endswith("." + d) for d in bad_domains):
+        reasons.append("known bad domain (policy blocklist)")
         verdict = "bad"
 
     reg = _registrable(host)
@@ -93,6 +119,12 @@ def check_url(url: str, deep: bool = False) -> dict:
             break
     if "login" in host or "verify" in host or "wallet" in name:
         reasons.append("login/verify keyword")
+        # A login/verify/wallet keyword alone is at least `warn` (it used to
+        # stay `ok`); combined with a drainer word in the host it is `bad`.
+        verdict = "warn" if verdict == "ok" else verdict
+        if any(w in host for w in DRAIN_HOST_WORDS):
+            reasons.append("login/verify/wallet keyword combined with drainer word")
+            verdict = "bad"
 
     if deep:
         age = domain_age(reg)

@@ -36,9 +36,12 @@ CREATE TABLE IF NOT EXISTS quests(
 CREATE TABLE IF NOT EXISTS runs(
   id INTEGER PRIMARY KEY AUTOINCREMENT, quest_id TEXT, identity_id TEXT, status TEXT DEFAULT 'running',
   proof TEXT, error TEXT, started_at TEXT, ended_at TEXT);
+CREATE TABLE IF NOT EXISTS run_locks(
+  quest_id TEXT, identity_id TEXT, started_at TEXT, PRIMARY KEY(quest_id, identity_id));
 CREATE TABLE IF NOT EXISTS gates(
   id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, summary TEXT, payload TEXT, payload_hash TEXT,
-  code_hash TEXT, code TEXT, status TEXT DEFAULT 'pending', created_at TEXT, decided_at TEXT);
+  code_hash TEXT, code TEXT, status TEXT DEFAULT 'pending', created_at TEXT, decided_at TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0, last_attempt_at TEXT);
 CREATE TABLE IF NOT EXISTS spend(day TEXT, chain TEXT, wallet TEXT, wei TEXT, PRIMARY KEY(day, chain, wallet));
 CREATE TABLE IF NOT EXISTS checkins(project TEXT, day TEXT, status TEXT, proof TEXT, PRIMARY KEY(project, day));
 CREATE TABLE IF NOT EXISTS events(
@@ -67,6 +70,28 @@ def db() -> sqlite3.Connection:
     con = sqlite3.connect(DB_PATH, timeout=30)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
+    # Migration: databases created before the wrong-code lockout fix have no
+    # `attempts` column — CREATE TABLE IF NOT EXISTS never alters an existing
+    # table, so add it once here. The PRAGMA check makes this idempotent:
+    # db() runs on every access, and the ALTER is skipped once the column
+    # exists, so pre-existing gates keep their rows/status untouched.
+    try:
+        cols = [r[1] for r in con.execute("PRAGMA table_info(gates)")]
+        if "attempts" not in cols:
+            con.execute("ALTER TABLE gates ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+            con.commit()
+        if "last_attempt_at" not in cols:
+            con.execute("ALTER TABLE gates ADD COLUMN last_attempt_at TEXT")
+            con.commit()
+    except sqlite3.Error:
+        pass
+    # One-way scrub for databases created before the gates fix: plaintext
+    # approval codes must never sit in SQLite. New rows store NULL already.
+    try:
+        con.execute("UPDATE gates SET code=NULL WHERE code IS NOT NULL")
+        con.commit()
+    except sqlite3.Error:
+        pass
     return con
 
 

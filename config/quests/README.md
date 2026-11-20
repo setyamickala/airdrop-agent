@@ -1,7 +1,10 @@
 # Example quests
 
-Shipped, validated, tested against the live sites on 2026-11-19. Import, dry-run, then run with one
-identity. Most park at a `manual` step on purpose — that is the honest boundary.
+22 files: 19 live-tested against the sites on 2026-11-19 (see
+[../../docs/TARGETS.md](../../docs/TARGETS.md)) plus 3 generic examples with
+placeholder URLs — `galxe-daily`, `discord-role`, `sepolia-daily` — which are
+not live-tested. Import, dry-run, then run with one identity. Most park at a
+`manual` step on purpose — that is the honest boundary.
 
 | file | flow | stops at |
 |---|---|---|
@@ -24,6 +27,9 @@ identity. Most park at a `manual` step on purpose — that is the honest boundar
 | oripa-raffle | email entry | submit |
 | codekitty-whitelist | terminal boot | intro + mint |
 | zkunnamed-apply | apply form | fill + send |
+| galxe-daily | generic example, placeholder URL | — |
+| discord-role | generic example, placeholder URL | — |
+| sepolia-daily | generic example, placeholder URL | — |
 
 ```bash
 aa quest import config/quests/oripa-raffle.yaml

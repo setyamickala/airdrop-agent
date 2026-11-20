@@ -149,7 +149,7 @@ macOS or Linux, Python 3.10+ (3.12 recommended), Chromium installed by the scrip
 git clone https://github.com/setyamickala/airdrop-agent.git
 cd airdrop-agent
 ./install.sh              # venv, deps, chromium
-# ./install.sh --full     # adds Foundry for contract deploys
+# ./install.sh --full     # all optional extras (browser, solana, discord, dev)
 # ./install.sh --no-browser
 ./install.sh --service=systemd   # or =launchd
 aa init && aa doctor
@@ -249,8 +249,8 @@ aa identity new solo --persona casual-id --proxy http://user:pass@host:port --wa
 aa identity clone solo farm2 --wallets 2
 aa wallet new --identity solo --count 10
 aa wallet balance --identity solo --chain base-sepolia
-aa wallet export --identity solo
-aa wallet sign --identity solo --label first --message "gm"
+aa vault export ~/backup.aa
+aa sign message --identity solo --label first --message "gm"
 ```
 
 One seed per identity, `m/44'/60'/0'/0/i` for EVM and `m/44'/501'/i'/0'` for Solana. The seed never
@@ -262,7 +262,7 @@ prints; `aa vault export --password '…'` is the surviving backup and prints a 
 aa tg login --identity solo --phone +62…      # real account via MTProto
 aa tg join --identity solo @channel
 aa x follow --identity solo @project
-aa dc login --identity solo --user … --password …
+aa dc login --identity solo --email … --password …
 aa dc grind --identity solo --server project --minutes 30
 aa email otp --identity solo --sender noreply@project.xyz
 ```
@@ -301,7 +301,7 @@ with exit 99 until `aa unkill`.
 ```bash
 aa browser --identity solo --url https://app.example.com --headful
 aa ext install rabby --identity solo
-aa radar scan
+aa radar scan --identity solo
 aa daily run --identity solo
 aa mcp serve          # stdio JSON-RPC, 21 tools
 aa events --limit 50

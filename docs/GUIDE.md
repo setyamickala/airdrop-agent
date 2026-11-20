@@ -125,8 +125,8 @@ aa wallet balance --identity main --chain base-sepolia
 aa wallet import --identity main --chain evm --secret 0x…
 aa wallet import --identity main --chain evm --mnemonic --secret "word …"
 aa wallet import --identity main --chain sol --secret "[1,2,…]"
-aa wallet export --identity main
-aa wallet sign --identity main --label evm-1 --message "hello"
+aa vault export ~/backup.aa
+aa sign message --identity main --label evm-1 --message "hello"
 aa wallet approve --identity main --label evm-1 --token 0x… --spender 0x… --amount 100 --broadcast
 ```
 
@@ -227,10 +227,10 @@ aa x post --identity main "gm"
 **Discord** (user token from the browser; self-bot ToS is grey):
 
 ```bash
-aa dc login --identity main --user you@mail --password …
+aa dc login --identity main --email you@mail --password …
 aa dc servers --identity main
-aa dc follow --identity main --server project
-aa dc grind --identity main --server project --minutes 30 --max-messages 40
+aa dc follow --identity main --channel project
+aa dc grind --identity main --server project --minutes 30 --max 40
 aa dc progress --identity main
 ```
 
@@ -316,8 +316,9 @@ aa wallet send --chain sepolia --identity main --label evm-1 --to 0x… --amount
 aa wallet send … --broadcast
 ```
 
-Order inside a send: policy check → payload hash → optional gate → simulation → gas cap → sign →
-broadcast. `to` empty means contract creation. Solana has its own command `aa wallet sol-send`.
+Order inside a send: kill → blocklist → decode → simulate → caps (per-tx, gas, daily) → gate
+(payload hash) → sign → broadcast. `to` empty means contract creation. Solana has its own command
+`aa wallet sol-send`, gated inside `sol.send()` the same way.
 
 Faucets are catalogued in `config/faucets.yaml` with cooldowns. A claim that hits an unwinnable
 challenge parks with a screenshot rather than looping.
@@ -327,7 +328,7 @@ challenge parks with a screenshot rather than looping.
 ```bash
 aa daily plan --identity main
 aa daily run --identity main
-aa daily status --identity main
+aa daily status
 aa autopilot plan
 aa autopilot tick --headful
 aa autopilot daemon
@@ -343,8 +344,11 @@ daily budgets are counted from events, and `active_hours` silences the night. To
 aa mcp serve
 ```
 
-stdio JSON-RPC, 21 tools: status, identities, wallets, balance, send, sign, social, quests, radar, gates, session, cf,
-quests, quest run, radar, daily, gate approve/list, browser snapshot, kill. Vault export, mode
+stdio JSON-RPC, 21 tools: aa_status, aa_identity_new, aa_wallet_list, aa_wallet_new,
+aa_wallet_balance, aa_tx_send, aa_sign_message, aa_telegram_join, aa_x_follow,
+aa_discord_grind, aa_quest_list, aa_quest_run, aa_radar_scan, aa_daily_run, aa_gate_list,
+aa_gate_approve, aa_session_status, aa_session_warm, aa_cf_status, aa_email_otp,
+aa_autopilot_tick. There is no MCP "browser snapshot" or "kill" tool. Vault export, mode
 switch and browser manual flows stay CLI-only because they are interactive.
 
 Host adapters: [agents/](../agents/README.md). `AGENTS.md` is the router; `SKILL.md` is the deep
@@ -360,8 +364,9 @@ Exit codes: `0` ok, `2` denied, `3` failure, `10` gate, `99` kill. A host must b
 on prose.
 
 `aa kill "reason"` writes `KILL` and every entry point refuses with 99. `aa unkill` clears it.
-`aa allow add domain app.example.com` and `aa allow add contract base 0x…` widen scope without
-editing YAML.
+`aa allow add domain app.example.com` widens domain scope without editing YAML; contracts are
+allowlisted by editing `contracts_allowlist` in `policy.yaml` (there is no `aa allow add contract`
+command).
 
 ## 16. Safety and sybil
 
@@ -383,7 +388,7 @@ aa vault import ~/backup.aa --password 'strong'
 Back up: vault export, `.env`, `policy.yaml`, `quests/`. Not the profile tree. Restore in order:
 install, `aa init`, edit `.env`, `aa vault import`, `aa session restore`.
 
-Upgrade: unzip over the old tree, `./install.sh`, `aa doctor`, `aa migrate`.
+Upgrade: unzip over the old tree, `./install.sh`, `aa doctor`.
 
 ## 18. Troubleshooting
 

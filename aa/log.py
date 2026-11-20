@@ -41,6 +41,9 @@ def refresh_literals() -> None:
 
 refresh_literals()
 
+# mnemonic: 12/24 lowercase words separated by spaces
+MNEMONIC = re.compile(r"\b(?:[a-z]{3,8} ){11,23}[a-z]{3,8}\b")
+
 PATTERNS = [
     (re.compile(r"\b(0x)?[0-9a-fA-F]{64}\b"), lambda m: (m.group(1) or "") + "0x…" + m.group(0)[-6:]),
     (re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{30,}\b"), lambda m: "bot…" + m.group(0)[-6:]),
@@ -48,9 +51,17 @@ PATTERNS = [
      lambda m: "discord…" + m.group(0)[-6:]),
     (re.compile(r"\b[A-Za-z0-9_-]{22,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{25,}\b"), lambda m: "token…" + m.group(0)[-6:]),
     (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}:\d{2,5}\b"), lambda m: "proxy…" + m.group(0)[-5:]),
+    # 12/24-word mnemonic (regex was defined but never wired into redact()).
+    # NOTE: this is structural — any 12+ run of 3-8 letter lowercase words
+    # matches, so a long lowercase sentence can be over-redacted. That is
+    # the safe direction for a secret; see looks_like_mnemonic() for the
+    # strict full-string check.
+    (MNEMONIC, lambda m: "mnemonic…redacted"),
+    # Solana private key in base58: 64 bytes -> ~87-88 chars. Raw 32-44 char
+    # base58 *addresses* are public and deliberately NOT redacted here —
+    # a pattern that short would also eat ordinary ids/tokens.
+    (re.compile(r"\b[1-9A-HJ-NP-Za-km-z]{87,88}\b"), lambda m: "sol-key…" + m.group(0)[-6:]),
 ]
-# mnemonic: 12/24 lowercase words separated by spaces
-MNEMONIC = re.compile(r"\b(?:[a-z]{3,8} ){11,23}[a-z]{3,8}\b")
 
 
 def redact(text: str) -> str:

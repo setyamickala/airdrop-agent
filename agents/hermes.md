@@ -12,7 +12,7 @@ Hermes is shell-first, so it uses the binary directly. The H-routes map onto com
 | H6 | NFT | `aa quest new ... --platform generic`, mint step |
 | H7 | SIWE/typed | `aa sign typed --file payload.json` |
 | H8 | browser | `aa browser --identity <id> --url <u>` |
-| H9 | contract read/write | quest `tx` / `eval` steps |
+| H9 | contract read/write | quest `tx` steps (`eval` was removed — arbitrary JS is no longer allowed) |
 | H10 | deploy | `aa testnet deploy --kind erc20` |
 
 ## Env checklist

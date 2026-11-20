@@ -19,12 +19,10 @@ from urllib.parse import urlparse
 from .. import chains, config, db
 from ..jsonio import Denied
 from ..log import get_logger
+from .fingerprint import fingerprint_config, render_stealth_js
 
 log = get_logger("browser")
 JS_DIR = Path(__file__).parent
-
-UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
 SNAPSHOT_JS = r"""
 () => {
@@ -87,7 +85,9 @@ class Browser:
     def _clear_stale_lock(d: Path) -> None:
         """A killed browser leaves SingletonLock behind and blocks the next launch."""
         lock = d / "SingletonLock"
-        if not lock.exists():
+        # Chromium's lock is a symlink to a nonexistent target, so exists()
+        # (which follows the link) is False even for a live lock.
+        if not (lock.exists() or lock.is_symlink()):
             return
         pid = 0
         try:
@@ -128,22 +128,36 @@ class Browser:
             from playwright.async_api import async_playwright
 
         self._pw = await async_playwright().start()
+        # Per-identity deterministic fingerprint (see fingerprint.py).
+        fp = fingerprint_config(self.identity_id)
         args = ["--disable-blink-features=AutomationControlled", "--no-first-run",
                 "--no-default-browser-check", "--disable-dev-shm-usage",
-                f"--lang={config.env('BROWSER_LANG', 'en-US')}"]
+                f"--lang={config.env('BROWSER_LANG', fp['locale'])}"]
         if self.extension_paths:
             joined = ",".join(self.extension_paths)
             args += [f"--disable-extensions-except={joined}", f"--load-extension={joined}"]
         proxy = self._proxy()
+        # Explicit env overrides (BROWSER_UA / BROWSER_LOCALE / TZ) still win
+        # over the fingerprint defaults.
         kw = {"headless": self.headless, "args": args,
-              "viewport": {"width": 1366 + random.randint(-40, 60), "height": 768 + random.randint(-30, 40)},
-              "locale": config.env("BROWSER_LOCALE", "en-US"),
-              "timezone_id": config.env("TZ", "Asia/Jakarta"),
+              "viewport": fp["viewport"],
+              "locale": config.env("BROWSER_LOCALE", fp["locale"]),
+              "timezone_id": config.env("TZ", fp["timezone_id"]),
               "user_agent": self.user_agent, "ignore_https_errors": True,
               "permissions": ["clipboard-read", "clipboard-write"]}
         if proxy:
             kw["proxy"] = {"server": proxy} if "@" not in proxy else _proxy_obj(proxy)
-        self._ctx = await self._pw.chromium.launch_persistent_context(str(self._profile_dir()),
+        profile_dir = self._profile_dir()
+        # Unseal the profile (best-effort: a missing vault password must not
+        # block launching; the profile simply stays as it was on disk).
+        try:
+            from . import profile_crypto
+
+            if profile_crypto.enabled():
+                profile_crypto.unseal_profile(self.identity_id, self.profile)
+        except Exception as e:  # noqa: BLE001
+            log.warning("profile unseal skipped: %s", e)
+        self._ctx = await self._pw.chromium.launch_persistent_context(str(profile_dir),
                                                                       channel=config.env("AA_BROWSER_CHANNEL", "chromium"), **kw)
         from .guards import WalletBridge
 
@@ -162,9 +176,10 @@ class Browser:
         await self._ctx.expose_binding("__aaWallet", self.bridge.evm)
         await self._ctx.expose_binding("__aaSolana", self.bridge.solana)
         conf = {"address": self.bridge.address, "chainId": hex(int(chains.cfg(self.chain)["chain_id"])),
-                "connected": False, "solAddress": self.bridge.sol_address, "solConnected": False}
+                "connected": False, "solAddress": self.bridge.sol_address, "solConnected": False,
+                "uuid": fp["eip6963_uuid"]}
         await self._ctx.add_init_script(f"window.__AA_CONF = {json.dumps(conf)};")
-        await self._ctx.add_init_script((JS_DIR / "stealth.js").read_text())
+        await self._ctx.add_init_script(render_stealth_js(fp))
         for js_name in ("provider.js", "sol_provider.js"):
             await self._ctx.add_init_script((JS_DIR / js_name).read_text())
         self.pages = self._ctx.pages or []
@@ -187,6 +202,15 @@ class Browser:
                     pass
             if self._ctx:
                 await self._ctx.close()
+            # Seal session files into the vault now the browser is closed.
+            # Best-effort: a seal failure must never mask the close itself.
+            try:
+                from . import profile_crypto
+
+                if profile_crypto.enabled():
+                    profile_crypto.seal_profile(self.identity_id, self.profile)
+            except Exception as e:  # noqa: BLE001
+                log.warning("profile seal skipped: %s", e)
         finally:
             if self._pw:
                 await self._pw.stop()
@@ -207,7 +231,7 @@ class Browser:
 
     @property
     def user_agent(self) -> str:
-        return config.env("BROWSER_UA", UA)
+        return config.env("BROWSER_UA") or fingerprint_config(self.identity_id)["user_agent"]
 
     async def goto(self, url: str, *, check_scam: bool = True, wait_until: str = "domcontentloaded") -> dict:
         from .. import scam_check

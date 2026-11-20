@@ -18,7 +18,7 @@ main seed is never imported by default.
 - 6-char code, hash-bound to the payload, TTL 12h, single use.
 - Delivered only to the operator's Telegram bot. The page cannot choose the code.
 - A gate covers: chain, recipient, value, calldata, selector, decoded call, balance delta, domain.
-- Unlimited approvals always gate, in every mode.
+- Unlimited approvals are hard-blocked in every mode (not just gated): `send()` denies them before simulation, `approve()` requires a finite amount, and `aa wallet approve --unlimited` is denied.
 - Permit/Permit2/Seaport orders gate unless turbo explicitly sets `allow_permits`.
 
 ## Hard blocks (no mode overrides)

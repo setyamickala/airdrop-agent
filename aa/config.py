@@ -40,7 +40,7 @@ DEFAULTS = {
 
 for _d in (HOME, VAULT_DIR, DATA_DIR, SESSION_DIR, PROFILE_DIR, PROOF_DIR, LOG_DIR, QUEST_DIR, EXT_DIR):
     _d.mkdir(parents=True, exist_ok=True)
-for _d in (HOME, VAULT_DIR, SESSION_DIR, PROFILE_DIR):
+for _d in (HOME, VAULT_DIR, DATA_DIR, SESSION_DIR, PROFILE_DIR, PROOF_DIR, LOG_DIR, QUEST_DIR, EXT_DIR):
     try:
         os.chmod(_d, 0o700)
     except OSError:

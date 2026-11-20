@@ -175,6 +175,12 @@ def needs_gate(action: str, **kw) -> tuple[bool, list[str]]:
         if kw.get("mainnet"):
             reasons.append("mainnet")
         return bool(reasons), reasons
+    if action == "sign_text":
+        if kw.get("looks_like_siwe"):
+            reasons.append("sign-in message (SIWE/SIWS)")
+        if kw.get("risky"):
+            reasons.append("risky sign text")
+        return bool(reasons), reasons
     if action == "connect":
         return not kw.get("safe_origin", False), ["origin not allowlisted / scam_check not ok"]
     if action == "deploy":
@@ -206,10 +212,16 @@ def note(kind: str, msg: str, identity_id: str | None = None, data: dict | None 
 UINT_RE = re.compile(r"^\d+$")
 
 
-def unlimited_approval(amount: str | int | None) -> bool:
+def unlimited_approval(amount: str | int | None, bits: int = 256) -> bool:
+    """True when `amount` is the max for its field width.
+
+    Default is uint256 (ERC20 approve / increaseAllowance). Permit2 uses
+    uint160, so callers must pass bits=160 there — a uint160 max is far below
+    the uint256 max and would otherwise look finite.
+    """
     if amount is None:
         return False
     try:
-        return int(amount) >= MAX_WEI - 1
+        return int(amount) >= 2 ** bits - 1
     except (TypeError, ValueError):
         return False

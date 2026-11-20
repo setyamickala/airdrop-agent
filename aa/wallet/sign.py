@@ -74,7 +74,8 @@ def personal(identity_id: str, label: str, message: str, origin: str = "",
     summary = summarize_message(message)
     payload = {"_kind": "sign_text", "identity_id": identity_id, "label": label,
                "message": message, "origin": host}
-    gate, reasons = policy.needs_gate("sign_text", identity_id=identity_id)
+    gate, reasons = policy.needs_gate("sign_text", identity_id=identity_id,
+                                      looks_like_siwe=summary["looks_like_siwe"])
     if gate and broadcast_gate:
         gates.require("sign_text", f"Sign message di {host or 'CLI'} ({summary['chars']} chars)\n{message[:280]}", payload)
 
@@ -90,9 +91,16 @@ def typed(identity_id: str, label: str, typed_json: dict | str, origin: str = ""
     if not isinstance(data, dict) or "message" not in data or "types" not in data:
         raise SystemExit("typed data needs types/primaryType/domain/message")
     s = summarize_typed(data)
-    host = s["host"] or host_from_origin(origin)
-    if host:
-        _check_origin(host, strict=False)
+    # The host that must be allowlisted is the page origin that asked for
+    # the signature — never the `domain.name` inside the typed data itself,
+    # which the page controls and can spoof (e.g. domain.name "Uniswap"
+    # while the page is a drainer). Without a page origin there is nothing
+    # to verify against, so the sign is denied; the CLI passes --origin.
+    host = host_from_origin(origin) if origin else ""
+    if not host:
+        raise Denied("typed sign needs a verifiable page origin "
+                     "(browser: origin missing; CLI: pass --origin <host>)")
+    _check_origin(host, strict=True)
     mainnet = int(s.get("chain_id") or 1) in (1, 8453, 10, 42161, 137, 56)
     payload = {"_kind": "sign_typed", "identity_id": identity_id, "label": label,
                "typed": data, "origin": host}

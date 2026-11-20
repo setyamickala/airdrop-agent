@@ -1,8 +1,12 @@
+import asyncio
 import json
 import time
 
+import pytest
+
 from aa.browser import cf
 from aa import vault
+from aa.jsonio import Denied
 
 
 def test_detect_managed_and_turnstile():
@@ -45,3 +49,25 @@ def test_forget_all_for_identity():
     cf.remember("id-b", "b.test", [{"name": "cf_clearance", "value": "2", "domain": "b.test", "path": "/"}], "U")
     assert cf.forget("id-a") >= 1
     assert all(r["identity"] != "id-a" for r in cf.status())
+
+
+def test_token_solve_disabled_by_default(monkeypatch):
+    # No CF_ALLOW_SOLVER=1 -> the solver never runs, even with a page object.
+    monkeypatch.delenv("CF_ALLOW_SOLVER", raising=False)
+    out = asyncio.run(cf._token_solve(object(), "turnstile"))
+    assert out["state"] == "unsolved"
+    assert "CF_ALLOW_SOLVER" in out["reason"]
+
+
+def test_token_solve_opted_in_but_no_provider(monkeypatch):
+    monkeypatch.setenv("CF_ALLOW_SOLVER", "1")
+    monkeypatch.setenv("CAPTCHA_PROVIDER", "")
+    out = asyncio.run(cf._token_solve(object(), "turnstile"))
+    assert out == {"state": "unsolved", "reason": "no captcha provider"}
+
+
+def test_flare_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("CF_ALLOW_FLARESOLVERR", raising=False)
+    monkeypatch.setenv("FLARESOLVERR_URL", "http://127.0.0.1:8191")
+    with pytest.raises(Denied, match="CF_ALLOW_FLARESOLVERR"):
+        cf._flare("https://example.com")

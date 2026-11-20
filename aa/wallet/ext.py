@@ -14,7 +14,6 @@ import json
 import shutil
 import struct
 import zipfile
-from pathlib import Path
 
 import requests
 
@@ -98,11 +97,3 @@ def remove(identity_id: str, name: str) -> dict:
     d = config.EXT_DIR / identity_id / name
     shutil.rmtree(d, ignore_errors=True)
     return {"removed": not d.exists(), "path": str(d)}
-
-
-def seed_rabby(identity_id: str, mnemonic: str, password: str) -> Path:
-    """Write a Rabby-compatible seed file for manual onboarding (agent automates the UI)."""
-    p = config.EXT_DIR / identity_id / "rabby.seed"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps({"mnemonic": mnemonic, "password": password}))
-    return p

@@ -13,7 +13,7 @@ Claude Desktop: `~/Library/Application Support/Claude/claude_desktop_config.json
 or `%APPDATA%\Claude\claude_desktop_config.json` (Windows).
 Cursor: `.cursor/mcp.json`.
 
-Restart the client. The server exposes 18 `aa_*` tools. Nothing is auto-run on start; there is no
+Restart the client. The server exposes 21 `aa_*` tools. Nothing is auto-run on start; there is no
 background tick inside MCP — call `aa_autopilot_tick` if you want a pulse.
 
 ## Tools

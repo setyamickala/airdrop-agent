@@ -42,7 +42,7 @@ Full rewrite. One package, one CLI, one policy engine; every v3 script kept as a
 - Faucet catalog with cooldowns and label fallback; contract deploy; randomised campaigns.
 - Radar: TG/X/web sources, dedupe, scam heuristics, explainable scoring, auto-queued draft quests.
 - Daily streaks, autopilot ticker with budgets, systemd/launchd/cron templates.
-- MCP stdio server (18 tools), SKILL.md, AGENTS.md router, Hermes/Muse/OpenClaw/Claude adapters.
+- MCP stdio server (21 tools), SKILL.md, AGENTS.md router, Hermes/Muse/OpenClaw/Claude adapters.
 - 59 offline tests + `aa doctor`.
 
 ### Changed

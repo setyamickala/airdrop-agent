@@ -251,15 +251,8 @@ def wallet_sol_send(args) -> tuple[dict, list[str]]:
     w = solw.resolve(r["id"], args.label)
     cfg = chains.sol(args.chain)
     lamports = int(args.amount * 1e9)
-    from . import guard as gd
-
-    gd.check_kill()
-    payload = {"_kind": "tx", "chain": args.chain, "identity": r["id"], "label": w["label"],
-               "to": args.to, "value": str(lamports), "data": "solana"}
-    if not gates.consume(payload):
-        want, reasons = policy.needs_gate("tx", mainnet=not cfg.get("testnet"), contract_ok=True)
-        if want:
-            gates.require("tx", f"SOL send {args.amount} → {args.to} dari {w['label']}", payload)
+    # No gate here: sol.send() gates (once) after simulate + caps, so a
+    # single-use approval is not consumed twice. See sol.py:send().
     out = solw.send(cfg, w["label"], args.to, lamports, broadcast=args.broadcast, identity_id=r["id"])
     return out, []
 
@@ -275,10 +268,14 @@ def wallet_import(args) -> tuple[dict, list[str]]:
 
 
 def wallet_approve(args) -> tuple[dict, list[str]]:
+    if args.unlimited:
+        # The --unlimited flag is kept in the parser so this is a clear denial,
+        # not an "unrecognized argument" error.
+        raise Denied("unlimited approval is blocked; use --amount with a finite amount")
     r = db.identity(args.identity)
     w = evmw.resolve(r["id"], args.label)
     out = sender.approve(args.chain, r["id"], w["label"], args.token, args.spender,
-                         None if args.unlimited else int(args.amount * 1e18), broadcast=args.broadcast)
+                         int(args.amount * 1e18), broadcast=args.broadcast)
     return out, []
 
 
@@ -297,7 +294,7 @@ def sign_typed(args) -> tuple[dict, list[str]]:
     r = db.identity(args.identity)
     w = evmw.resolve(r["id"], args.label)
     data = Path(args.file).read_text() if Path(args.file).exists() else args.json
-    return signer.typed(r["id"], w["label"], data), []
+    return signer.typed(r["id"], w["label"], data, args.origin or ""), []
 
 
 # ---------------- email ----------------
@@ -694,23 +691,57 @@ def browser(args) -> tuple[dict, list[str]]:
     return _asec(go()), []
 
 
+def _bundle_password(args, *, required: bool) -> str | None:
+    """Bundle password for `vault export/import`.
+
+    `--password` still works but is discouraged: a password on the command
+    line lands in shell history and the process list. Without it, prompt
+    interactively with getpass (never echoed). Returns None when the prompt
+    is left empty — export then seals with the vault password; import
+    requires a password, so an empty answer is denied there.
+    """
+    if getattr(args, "password", None):
+        return args.password
+    try:
+        import getpass
+
+        pw = getpass.getpass("Vault bundle password: ")
+    except (EOFError, KeyboardInterrupt):
+        raise Denied("vault bundle password is required (omit --password for a prompt)")
+    if not pw and required:
+        raise Denied("vault bundle password is required (omit --password for a prompt)")
+    return pw or None
+
+
 def vault_cmd(args) -> tuple[dict, list[str]]:
     if args.v_cmd == "export":
         dest = Path(args.file).expanduser()
         if dest.exists():
             raise Denied(f"{dest} exists")
-        return vault.export_bundle(dest, args.password), ["store it offline, same password = full keys"]
+        return vault.export_bundle(dest, _bundle_password(args, required=False)), ["store it offline, same password = full keys"]
     if args.v_cmd == "import":
-        return vault.import_bundle(Path(args.file), args.password), []
+        return vault.import_bundle(Path(args.file), _bundle_password(args, required=True)), []
     if args.v_cmd == "count":
         return {"entries": vault.count()}, []
     if args.v_cmd == "password":
         cur = config.env("VAULT_PASSWORD")
         if cur and not cur.startswith("change-me"):
             return {"password": "already set", "entries": vault.count(),
-                    "hint": "rotation needs re-encryption; export first"}, []
+                    "hint": "rotate with: aa vault rekey"}, []
         _set_vault_password()
         return {"generated": "stored in .env — back it up now"}, []
+    if args.v_cmd == "rekey":
+        import getpass
+
+        new_pw = args.password
+        if not new_pw:
+            new_pw = getpass.getpass("New vault password: ")
+            confirm = getpass.getpass("Repeat new vault password: ")
+            if new_pw != confirm:
+                raise Denied("new passwords do not match")
+        if not new_pw:
+            raise Denied("new vault password is required")
+        return vault.rekey(new_pw), ["back up the new password — the old one no longer opens the vault"]
     raise Denied("unknown vault command")
 
 
@@ -742,7 +773,8 @@ def build() -> argparse.ArgumentParser:
     add("version", lambda: ({"version": __version__}, []))
     s = add("mode", lambda m=None: ({"mode": policy.set_mode(m) if m else policy.mode()}, []))
     s.add_argument("m", choices=policy.MODES, nargs="?", default=None)
-    add("kill", lambda reason="": (guard.kill(reason), []))
+    s = add("kill", lambda reason="": (guard.kill(reason), []))
+    s.add_argument("reason", nargs="?", default="")
     add("unkill", lambda: (guard.unkill(), []))
 
     g = sub.add_parser("gate").add_subparsers(dest="g_cmd", required=True)
@@ -854,6 +886,8 @@ def build() -> argparse.ArgumentParser:
     stp.add_argument("--label", default="first")
     stp.add_argument("--json", default="{}")
     stp.add_argument("--file", default="")
+    stp.add_argument("--origin", default="",
+                     help="page origin the signature is for (must be allowlisted; required)")
     stp.set_defaults(fn=envelope_run, target=sign_typed)
 
     e = sub.add_parser("email").add_subparsers(dest="e_cmd", required=True)
@@ -908,6 +942,21 @@ def build() -> argparse.ArgumentParser:
         sp.set_defaults(fn=envelope_run, target=tg, tg_cmd=name, **kwargs)
 
     tgcmd("me")
+    tr = t.add_parser("read")
+    tr.add_argument("target")
+    tr.add_argument("--limit", type=int, default=10)
+    tr.add_argument("--identity", default="")
+    tr.set_defaults(fn=envelope_run, target=tg, tg_cmd="read")
+    trc = t.add_parser("react")
+    trc.add_argument("target")
+    trc.add_argument("emoji", default="👍")
+    trc.add_argument("--identity", default="")
+    trc.set_defaults(fn=envelope_run, target=tg, tg_cmd="react")
+    ts = t.add_parser("start")
+    ts.add_argument("target")
+    ts.add_argument("--ref", default="")
+    ts.add_argument("--identity", default="")
+    ts.set_defaults(fn=envelope_run, target=tg, tg_cmd="start")
     tj = t.add_parser("join")
     tj.add_argument("target")
     tj.add_argument("--identity", default="")
@@ -1175,14 +1224,23 @@ def build() -> argparse.ArgumentParser:
     v = sub.add_parser("vault").add_subparsers(dest="v_cmd", required=True)
     ve = v.add_parser("export")
     ve.add_argument("file")
-    ve.add_argument("--password", default=None)
+    ve.add_argument("--password", default=None,
+                    help="DISCOURAGED: visible in shell history / process list — "
+                         "omit it for an interactive prompt (empty = vault password)")
     ve.set_defaults(fn=envelope_run, target=vault_cmd)
     vi = v.add_parser("import")
     vi.add_argument("file")
-    vi.add_argument("--password", required=True)
+    vi.add_argument("--password", default=None,
+                    help="DISCOURAGED: visible in shell history / process list — "
+                         "omit it for an interactive prompt")
     vi.set_defaults(fn=envelope_run, target=vault_cmd)
     v.add_parser("count").set_defaults(fn=envelope_run, target=vault_cmd)
     v.add_parser("password").set_defaults(fn=envelope_run, target=vault_cmd)
+    vr = v.add_parser("rekey")
+    vr.add_argument("--password", default=None,
+                    help="DISCOURAGED: visible in shell history / process list — "
+                         "omit it for an interactive prompt (asked twice)")
+    vr.set_defaults(fn=envelope_run, target=vault_cmd)
 
     m = sub.add_parser("mcp")
     m.add_argument("action", choices=["serve"], nargs="?", default="serve")

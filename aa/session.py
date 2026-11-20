@@ -96,6 +96,12 @@ async def warm(identity_id: str, name: str, *, browser=None, _quiet: bool = Fals
         await browser.start()
     try:
         page = browser.page
+        # Go to the platform first: warming a stale or blank tab proves
+        # nothing, and _alive() below must see the real logged-in page.
+        try:
+            await browser.goto(PROFILES[name]["url"], check_scam=False)
+        except Exception as e:  # noqa: BLE001
+            log.warning("warm goto %s failed: %s", name, str(e)[:80])
         for _ in range(random.randint(2, 4)):
             await page.mouse.move(random.randint(100, 900), random.randint(100, 700), steps=random.randint(4, 12))
             await page.mouse.wheel(0, random.randint(180, 600))
@@ -103,8 +109,9 @@ async def warm(identity_id: str, name: str, *, browser=None, _quiet: bool = Fals
         await page.mouse.wheel(0, -random.randint(100, 400))
         await browser.human_wait(1.0, 2.5)
         saved = await save(identity_id, browser)
-        db.event("session", f"warm {name}", identity_id)
-        return {"platform": name, "warmed": True, **saved}
+        alive = await _alive(browser.page, name)
+        db.event("session", f"warm {name} alive={alive}", identity_id)
+        return {"platform": name, "warmed": bool(alive), **saved}
     finally:
         if own:
             await browser.close()
@@ -121,17 +128,60 @@ async def save(identity_id: str, browser) -> dict:
     return {"saved": True, "cookies": len(state.get("cookies") or [])}
 
 
+async def _restore_origins(browser, origins: list) -> int:
+    """Best-effort localStorage restore from a saved storage_state.
+
+    Playwright cannot inject storage_state into a live context, so each
+    origin is visited and its localStorage items are set via evaluate.
+    Best-effort only: any failure is skipped, cookies (restored first) are
+    what logins actually need, and a browser without a usable page simply
+    restores 0 origins.
+    """
+    if not origins:
+        return 0
+    try:
+        page = browser.page
+    except Exception:  # noqa: BLE001
+        try:
+            pages = getattr(browser.context, "pages", None) or []
+            page = pages[0] if pages else None
+        except Exception:  # noqa: BLE001
+            page = None
+    if page is None:
+        return 0
+    n = 0
+    for o in (origins or [])[:8]:
+        origin = (o or {}).get("origin") or ""
+        items = (o or {}).get("localStorage") or []
+        if not origin.startswith("http") or not items:
+            continue
+        try:
+            await page.goto(origin, wait_until="domcontentloaded", timeout=15000)
+            await page.evaluate(
+                "(items) => { for (const it of items) { "
+                "try { localStorage.setItem(it.name, it.value); } catch (_) {} } }",
+                items)
+            n += 1
+        except Exception:  # noqa: BLE001
+            continue
+    return n
+
+
 async def restore(identity_id: str, browser) -> int:
     raw = vault.get_secret(STATE.format(identity=identity_id), "")
     if not raw:
         return 0
     try:
         blob = json.loads(raw)
-        cookies = (blob.get("state") or {}).get("cookies") or []
+        state = blob.get("state") or {}
+        cookies = state.get("cookies") or []
         ttl_days = int(config.env("SESSION_STATE_DAYS", "14"))
         if time.time() - blob.get("at", 0) > ttl_days * 86400:
             return 0
         await browser.context.add_cookies(cookies)
+        n_origins = await _restore_origins(browser, state.get("origins") or [])
+        if n_origins:
+            log.info("restored %s session origins", n_origins)
         return len(cookies)
     except Exception as e:  # noqa: BLE001
         log.warning("state restore failed: %s", e)

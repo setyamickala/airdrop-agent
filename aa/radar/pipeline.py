@@ -29,8 +29,43 @@ def _primary_link(item: dict) -> str | None:
     return ls[0]["url"] if ls else None
 
 
-def ingest(items: list[dict], *, auto: bool = False) -> dict:
+def _auto_queue(auto: bool | None) -> bool:
+    """Effective auto_queue: the radar_sources.yaml value wins when the file
+    mentions it; otherwise the explicit `auto` argument, else the old
+    behaviour (True — queue everything worth it)."""
+    try:
+        cfg = config.load_yaml("radar_sources.yaml")
+    except SystemExit:
+        cfg = {}
+    if "auto_queue" in cfg:
+        return bool(cfg.get("auto_queue"))
+    return True if auto is None else bool(auto)
+
+
+def _check_links(item: dict) -> dict:
+    """Scam-check every link in the item (not just the primary one).
+
+    Non-allowlisted hosts get a deep check (RDAP domain age); allowlisted
+    hosts stay shallow so ingest stays fast. Returns the worst verdict.
+    """
+    worst = {"verdict": "ok", "reasons": [], "host": ""}
+    for link in item.get("links") or []:
+        url = link.get("url") if isinstance(link, dict) else None
+        if not url:
+            continue
+        host = (urlparse(url).hostname or "").lower()
+        deep = not policy.domain_ok(host) if host else False
+        v = scam_check.check_url(url, deep=deep)
+        if v["verdict"] == "bad":
+            return v
+        if v["verdict"] == "warn" and worst["verdict"] == "ok":
+            worst = v
+    return worst
+
+
+def ingest(items: list[dict], *, auto: bool | None = None) -> dict:
     """Store + score items. Returns counts and the created quest ids."""
+    auto_queue = _auto_queue(auto)
     stored, queued, rejected = 0, [], 0
     for it in items:
         url = _primary_link(it)
@@ -40,7 +75,7 @@ def ingest(items: list[dict], *, auto: bool = False) -> dict:
         if db.one("SELECT 1 FROM radar_items WHERE url=?", (url,)):
             rejected += 1
             continue
-        verdict = scam_check.check_url(url, deep=False)
+        verdict = _check_links(it)
         ok, s, why = scoring.worth_it(it, int(it.get("trust") or 1))
         nid = db.execute("INSERT OR IGNORE INTO radar_items(kind,source,url,text,score,verdict,created_at)"
                          " VALUES(?,?,?,?,?,?,?)",
@@ -52,6 +87,10 @@ def ingest(items: list[dict], *, auto: bool = False) -> dict:
         db.event("radar", f"{s} {url}", data={"why": why})
         if not ok or verdict["verdict"] == "bad":
             rejected += 1
+            continue
+        if not auto_queue:
+            # Stored (and scored) but deliberately not turned into a quest:
+            # the operator reviews it from `aa radar latest` first.
             continue
         qid = create_quest(it, url, s)
         db.execute("UPDATE radar_items SET status='queued' WHERE url=?", (url,))
@@ -99,7 +138,7 @@ def digest(quest_ids: list[str]) -> None:
 
 
 async def scan(radar_identity: str, *, include_x: bool = True, include_tg: bool = True,
-               auto: bool = False) -> dict:
+               auto: bool | None = None) -> dict:
     items: list[dict] = []
     errors = []
     if include_tg:
@@ -113,7 +152,7 @@ async def scan(radar_identity: str, *, include_x: bool = True, include_tg: bool 
             items += await sources.scan_x_queries(radar_identity)
         except Exception as e:  # noqa: BLE001
             errors.append(f"x-search: {e}")
-    res = ingest(items)
+    res = ingest(items, auto=auto)
     res["errors"] = errors
     res["kinds"] = {}
     for it in items:

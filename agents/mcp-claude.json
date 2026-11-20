@@ -5,7 +5,9 @@
       "args": ["-m", "aa.mcp.server"],
       "env": {
         "AIRDROP_HOME": "/Users/YOU/.airdrop-agent",
-        "PYTHONUNBUFFERED": "1"
+        "PYTHONUNBUFFERED": "1",
+        "MCP_ALLOW_WRITE": "0",
+        "MCP_TOKEN": ""
       }
     }
   }

@@ -86,8 +86,27 @@ async def solve_on_page(page) -> dict:
     return {"present": True, "type": found["type"], "state": "solved"}
 
 
+def _proxy_parts(proxy: str) -> dict | None:
+    """Split "scheme://user:pass@host:port" (or bare "host:port") for solver APIs."""
+    if not proxy:
+        return None
+    from urllib.parse import unquote, urlparse
+
+    u = urlparse(proxy if "://" in proxy else "http://" + proxy)
+    if not u.hostname or not u.port:
+        return None
+    return {"scheme": (u.scheme or "http").lower(), "host": u.hostname, "port": u.port,
+            "username": unquote(u.username) if u.username else "",
+            "password": unquote(u.password) if u.password else ""}
+
+
 def _solve(provider: str, key: str, kind: str, sitekey: str, url: str, timeout: int = 180,
-           action: str = "", cdata: str = "") -> str:
+           action: str = "", cdata: str = "", proxy: str = "") -> str:
+    """Solve one captcha. With a proxy, the task is created *with* that proxy
+    (same IP as the browser identity) instead of proxyless — a proxyless
+    token solved from the solver's datacenter IP is a classic mismatch flag.
+    Without a proxy the old proxyless task is kept (some setups have none)."""
+    px = _proxy_parts(proxy)
     if provider == "2captcha":
         method = {"recaptcha": "userrecaptcha", "hcaptcha": "hcaptcha", "turnstile": "turnstile"}[kind]
         form = {"key": key, "method": method, "googlekey" if kind == "recaptcha" else "sitekey": sitekey,
@@ -96,6 +115,10 @@ def _solve(provider: str, key: str, kind: str, sitekey: str, url: str, timeout: 
             form["action"] = action
         if cdata:
             form["data"] = cdata
+        if px:
+            form["proxy"] = (f"{px['username']}:{px['password']}@{px['host']}:{px['port']}"
+                             if px["username"] else f"{px['host']}:{px['port']}")
+            form["proxytype"] = {"http": "HTTP", "https": "HTTPS"}.get(px["scheme"], "SOCKS5")
         r = requests.post("https://2captcha.com/in.php", timeout=30, data=form).json()
         if r.get("status") != 1:
             raise RuntimeError(f"2captcha: {r.get('request')}")
@@ -111,9 +134,14 @@ def _solve(provider: str, key: str, kind: str, sitekey: str, url: str, timeout: 
                 raise RuntimeError(f"2captcha: {q.get('request')}")
         raise TimeoutError("2captcha timeout")
     # anticaptcha
-    task = {"type": {"recaptcha": "RecaptchaV2TaskProxyless", "hcaptcha": "HCaptchaTaskProxyless",
-                     "turnstile": "TurnstileTaskProxyless"}[kind],
+    base = {"recaptcha": "RecaptchaV2Task", "hcaptcha": "HCaptchaTask",
+            "turnstile": "TurnstileTask"}[kind]
+    task = {"type": base if px else base + "Proxyless",
             "websiteURL": url, "websiteKey": sitekey}
+    if px:
+        task.update({"proxyType": {"http": "http", "https": "https"}.get(px["scheme"], "socks5"),
+                     "proxyAddress": px["host"], "proxyPort": px["port"],
+                     "proxyLogin": px["username"], "proxyPassword": px["password"]})
     if action:
         task["action"] = action
     if cdata:
@@ -159,10 +187,10 @@ async def _inject(page, kind: str, token: str) -> None:
 
 
 def solve_token(provider: str, key: str, kind: str, sitekey: str, url: str, *,
-                action: str = "", cdata: str = "", timeout: int = 180) -> str:
+                action: str = "", cdata: str = "", timeout: int = 180, proxy: str = "") -> str:
     """Public provider call used by the Cloudflare layer (turnstile kind)."""
     return _solve(provider, key, "turnstile" if kind in ("turnstile", "managed") else kind,
-                  sitekey, url, timeout, action, cdata)
+                  sitekey, url, timeout, action, cdata, proxy)
 
 
 async def inject_token(page, token: str) -> int:

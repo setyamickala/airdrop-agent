@@ -1,7 +1,7 @@
 # Quest index (optional). Real quests live in ~/.airdrop-agent/quests/*.yaml and are
 # imported with `aa quest import <file>`. This file lists starter examples to copy.
 examples:
-  - id: sepolia-checkin
+  - id: sepolia-daily
     name: "Sepolia daily check-in"
     platform: generic
     chain: sepolia

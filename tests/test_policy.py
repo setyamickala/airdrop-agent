@@ -18,6 +18,24 @@ def test_redacts_env_literals(monkeypatch):
     assert "super-secret-value-123" not in redact("x super-secret-value-123 y")
 
 
+def test_redacts_mnemonic_and_solana_key():
+    from aa.log import redact
+
+    words = "abandon ability able about above absent absorb abstract absurd abuse access accident"
+    out = redact(f"seed words {words} end")
+    assert "abandon" not in out
+    assert "mnemonic…redacted" in out
+    sol_key = "5" * 88
+    out2 = redact(f"sol key {sol_key} end")
+    assert sol_key not in out2
+    assert "sol-key…" in out2
+    # A short ordinary log line is untouched, and a public Solana address
+    # (32-44 char base58) is not redacted.
+    assert redact("quest done for galxe") == "quest done for galxe"
+    assert "DYw8jCTfwHNRJhhmFcbXvVDTqWMEVFBX6ZKUmG5CNSKK" in redact(
+        "sol account DYw8jCTfwHNRJhhmFcbXvVDTqWMEVFBX6ZKUmG5CNSKK funded")
+
+
 def test_mask():
     from aa import config
 

@@ -40,7 +40,7 @@ aa quest run dow-points --identity me --dry
 
 - one identity end-to-end: email → social → faucet → quest
 - tune radar sources, threshold 60
-- then more identities and `aa wallet new --count 10`
+- then more identities and `aa wallet new --identity main --count 10`
 - leave Discord chat off until you have watched one grind
 
 ## Scale

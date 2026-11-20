@@ -9,12 +9,19 @@ import asyncio
 import random
 import time
 
-from .. import config, db, policy
+from .. import config, db, gates, guard, policy, scam_check
 from ..browser import flows
-from ..jsonio import Denied
+from ..jsonio import Denied, Kill
 from ..log import get_logger
 
 log = get_logger("faucet")
+
+
+def _wallet_kind(chain: str) -> str:
+    """db.wallets() stores Solana wallets under kind 'sol', while policy.yaml
+    names the chain kind 'solana' — map it here (and in autopilot)."""
+    kind = policy.chain(chain).get("kind", "evm")
+    return "sol" if kind == "solana" else kind
 
 
 def catalog() -> dict:
@@ -47,8 +54,18 @@ def pick(chain: str, name: str = "") -> dict:
 
 
 async def claim(b, identity_id: str, chain: str, name: str = "") -> dict:
+    guard.check_kill()
     f = pick(chain, name)
-    kind = policy.chain(chain).get("kind", "evm")
+    v = scam_check.check_url(f["url"])
+    if v["verdict"] == "bad":
+        raise Denied(f"faucet {f['name']} looks like a drainer ({'; '.join(v['reasons'])})")
+    if v["verdict"] == "warn":
+        gates.require("faucet",
+                      f"Claim faucet {f['name']} di {f['url']} "
+                      f"(scam_check=warn: {'; '.join(v['reasons'])})",
+                      {"_kind": "faucet", "identity_id": identity_id,
+                       "name": f["name"], "url": f["url"]})
+    kind = _wallet_kind(chain)
     ws = db.wallets(identity_id, kind)
     if not ws:
         raise Denied(f"identity has no {kind} wallet")
@@ -57,7 +74,7 @@ async def claim(b, identity_id: str, chain: str, name: str = "") -> dict:
         b.page.set_default_timeout(15000)
     except Exception:  # noqa: BLE001
         pass
-    await b.goto(f["url"], check_scam=False)
+    await b.goto(f["url"])
     await flows.dismiss(b)
     cap = await b.solve_captcha_if_present()
     filled = False
@@ -103,7 +120,10 @@ async def claim(b, identity_id: str, chain: str, name: str = "") -> dict:
     txt = (await b.text()).lower()
     ok = any(w in txt for w in ("sent", "success", "successful", "dikirim", "on the way", "received")) and \
         not any(w in txt for w in ("error", "failed", "limit", "cooldown"))
-    if ok or f.get("assume_ok"):
+    # A claim is only recorded when the page actually says so. The old
+    # `assume_ok` escape hatch (mark claimed without any success text) is
+    # removed: no faucet in faucets.yaml used it, and it hid failed claims.
+    if ok:
         db.kv_set(f"faucet:{f['name']}", time.time())
         db.event("faucet", f"{f['name']} for {addr[:10]}", identity_id)
     shot = await b.screenshot(f"faucet_{f['name']}")
@@ -125,6 +145,8 @@ async def run_due(identity_id: str, chain: str, rpc_wait: bool = True) -> dict:
                 results.append(r)
             except asyncio.TimeoutError:
                 results.append({"faucet": f["name"], "needs": "manual", "error": "75s budget exhausted"})
+            except Kill:
+                raise
             except Exception as e:  # noqa: BLE001
                 results.append({"faucet": f["name"], "error": str(e)[:200]})
         await asyncio.sleep(random.uniform(5, 15))

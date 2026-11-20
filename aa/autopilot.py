@@ -17,7 +17,7 @@ import time
 
 from . import config, db, gates, guard, notify, policy, ratelimit
 from .daily import run as daily_run
-from .jsonio import Denied, Gate
+from .jsonio import Denied, Gate, Kill
 from .log import get_logger
 from .quest import dsl, runner
 from .radar import pipeline as radar
@@ -33,6 +33,11 @@ def cfg() -> dict:
 
 def mods() -> dict:
     return cfg().get("modules") or {}
+
+
+def _wallet_kind(chain_kind: str) -> str:
+    """db.wallets() kind for a policy chain kind ('solana' -> 'sol')."""
+    return "sol" if chain_kind == "solana" else chain_kind
 
 
 def _due(key: str, minutes: float) -> bool:
@@ -98,16 +103,20 @@ async def tick(*, headless: bool = True) -> dict:
 
     # 1. discovery
     if mods().get("radar", True) and _due("radar", float((cfg().get("intervals") or {}).get("radar_min", 25))):
+        guard.check_kill()
         try:
             ident = pick_identity()
             r = await radar.scan(ident["id"], auto=True)
             actions.append(f"radar stored={r['stored']} queued={len(r['queued'])}")
             _mark("radar")
+        except Kill:
+            raise
         except Exception as e:  # noqa: BLE001
             errors.append(f"radar: {e}")
 
     # 2. social follows from config
     if mods().get("follow", True) and _due("follow", float((cfg().get("intervals") or {}).get("follow_min", 180))):
+        guard.check_kill()
         try:
             ident = pick_identity()
             tg_targets = [t for t in (config.load_yaml("radar_sources.yaml").get("tg_channels") or [])
@@ -121,11 +130,14 @@ async def tick(*, headless: bool = True) -> dict:
                 res = await x.follow(ident["id"], xa[:8])
                 actions.append(f"x_follow {sum(1 for r in res if r.get('status') == 'following')}")
             _mark("follow")
+        except Kill:
+            raise
         except Exception as e:  # noqa: BLE001
             errors.append(f"follow: {e}")
 
     # 2b. keep sessions warm so logins do not rot
     if mods().get("warm", True) and _due("warm", float((cfg().get("intervals") or {}).get("warm_min", 240))):
+        guard.check_kill()
         try:
             from . import session as session_mod
 
@@ -133,21 +145,27 @@ async def tick(*, headless: bool = True) -> dict:
             res = await session_mod.warm_all(ident["id"], headless=headless)
             actions.append(f"warm {len(res)}")
             _mark("warm")
+        except Kill:
+            raise
         except Exception as e:  # noqa: BLE001
             errors.append(f"warm: {e}")
 
     # 3. daily streaks
     if mods().get("daily", True) and _due("daily", float((cfg().get("intervals") or {}).get("daily_min", 480))):
+        guard.check_kill()
         try:
             for i in identity_pool()[:2]:
                 r = await daily_run(i["id"], headless=headless, max_quests=1, faucets_on=False)
                 actions.append(f"daily {i['label']}: q={len(r.get('quests_done', []))}")
             _mark("daily")
+        except Kill:
+            raise
         except Exception as e:  # noqa: BLE001
             errors.append(f"daily: {e}")
 
     # 4. due quests
     if mods().get("quests", True) and _due("quests", float((cfg().get("intervals") or {}).get("quests_min", 8))):
+        guard.check_kill()
         if not _over_daily("quest", "quests"):
             n = int(cfg().get("max_quests_per_run", 3))
             for q in dsl.next_due(n):
@@ -157,9 +175,12 @@ async def tick(*, headless: bool = True) -> dict:
                     actions.append(f"skip {q['id']} (parked)")
                     continue
                 try:
+                    guard.check_kill()
                     ident = pick_identity()
                     await runner.run(q, ident["id"], headless=headless)
                     actions.append(f"quest {q['id']}")
+                except Kill:
+                    raise
                 except Gate as e:
                     errors.append(f"gate: {e}")
                     break
@@ -170,22 +191,27 @@ async def tick(*, headless: bool = True) -> dict:
 
     # 5. faucet top-ups
     if mods().get("faucet", True) and _due("faucet", float((cfg().get("intervals") or {}).get("faucet_min", 360))):
+        guard.check_kill()
         try:
             ident = pick_identity()
             from .testnet import faucets
 
             chains_ = [c for c in policy.testnets()
-                       if db.wallets(ident["id"], policy.chain(c).get("kind", "evm"))]
+                       if db.wallets(ident["id"], _wallet_kind(policy.chain(c).get("kind", "evm")))]
             for chain in chains_[:2]:
+                guard.check_kill()
                 out = await faucets.run_due(ident["id"], chain)
                 got = sum(1 for r in out.get("results", []) if r.get("claimed"))
                 actions.append(f"faucet {chain}: {got}/{len(out.get('results', []))}")
             _mark("faucet")
+        except Kill:
+            raise
         except Exception as e:  # noqa: BLE001
             errors.append(f"faucet: {e}")
 
     # 6. funded campaign (off by default — needs gas)
     if mods().get("campaign", False) and _due("campaign", float((cfg().get("intervals") or {}).get("campaign_min", 720))):
+        guard.check_kill()
         if not _over_daily("tx", "tx"):
             try:
                 ident = pick_identity()
@@ -193,17 +219,22 @@ async def tick(*, headless: bool = True) -> dict:
                     if db.wallets(ident["id"], "evm"):
                         await campaign.run(chain, ident["id"], "daily", rounds=1)
                 _mark("campaign")
+            except Kill:
+                raise
             except Exception as e:  # noqa: BLE001
                 errors.append(f"campaign: {e}")
 
     # 7. discord grind (opt-in)
     if mods().get("chat", False) and _due("chat", float((cfg().get("intervals") or {}).get("chat_min", 240))):
+        guard.check_kill()
         try:
             for i in db.identities():
                 if db.social(i["id"], "discord"):
                     discord.grind_all(i["id"], minutes_per_server=10)
                     break
             _mark("chat")
+        except Kill:
+            raise
         except Exception as e:  # noqa: BLE001
             errors.append(f"chat: {e}")
 
